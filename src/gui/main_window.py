@@ -135,12 +135,6 @@ class MainWindow(QMainWindow):
     def _toggle_engine(self, checked):
         if checked:
             port = self.port_combo.currentData()
-            if not port:
-                QMessageBox.warning(self, "AnyDMX",
-                                    "No COM port selected.\n"
-                                    "Plug in the USB-DMX dongle and press ⟳.")
-                self.start_btn.setChecked(False)
-                return
             try:
                 self.engine.start(port, self.universe_spin.value(),
                                   fps=self.settings.get("fps", 40))
@@ -181,7 +175,11 @@ class MainWindow(QMainWindow):
             self._set_led(self.artnet_led, "warn")
             self.artnet_label.setText(
                 "Art-Net: listening on UDP 6454 — no data for this universe")
-        if st["dmx_connected"]:
+        if not st["dmx_enabled"]:
+            self._set_led(self.dmx_led, "warn")
+            self.dmx_label.setText(
+                "DMX out: monitor mode — no COM port selected")
+        elif st["dmx_connected"]:
             self._set_led(self.dmx_led, "ok")
             self.dmx_label.setText(f"DMX out: streaming ({st['dmx_fps']:.0f} fps)")
         else:

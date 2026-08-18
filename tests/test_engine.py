@@ -43,6 +43,18 @@ def test_blackout():
     assert engine.get_channels() == bytes(512)
 
 
+def test_monitor_mode_no_com_port():
+    engine = Engine()
+    engine.start("", universe=0)
+    try:
+        st = engine.get_status()
+        assert st["running"] is True
+        assert st["dmx_enabled"] is False
+        assert st["dmx_connected"] is False
+    finally:
+        engine.stop()
+
+
 def test_status_when_stopped():
     engine = Engine()
     st = engine.get_status()

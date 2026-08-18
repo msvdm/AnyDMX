@@ -30,14 +30,18 @@ class Engine:
         self._last_frames = 0
 
     def start(self, com_port, universe, fps=40):
+        """Start bridging. Empty com_port = monitor mode (Art-Net in only)."""
         if self.running:
             self.stop()
         self._receiver = ArtNetReceiver(universe, self._on_dmx)
-        self._output = DmxOutput(com_port, self.get_channels, fps=fps)
+        self._output = DmxOutput(com_port, self.get_channels, fps=fps) \
+            if com_port else None
         self._receiver.start()  # raises OSError if port 6454 is taken
-        self._output.start()
+        if self._output:
+            self._output.start()
         self.running = True
-        log.info("Engine started: universe %d -> %s", universe, com_port)
+        log.info("Engine started: universe %d -> %s",
+                 universe, com_port or "(monitor mode, no DMX output)")
 
     def stop(self):
         if self._receiver:
@@ -88,6 +92,7 @@ class Engine:
             "artnet_active": artnet_active,
             "artnet_source": self._receiver.last_source_ip if self._receiver else None,
             "artnet_pps": pps,
+            "dmx_enabled": self._output is not None,
             "dmx_connected": bool(self._output and self._output.connected),
             "dmx_fps": fps,
             "dmx_error": self._output.last_error if self._output else None,
