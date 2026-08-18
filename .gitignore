@@ -1,0 +1,59 @@
+# AnyDMX .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / Build
+build/
+dist/
+*.egg-info/
+AnyDMX_Build/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# User Data & Configuration
+settings/
+*.json.bak
+
+# Logs
+logs/
+*.log
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# OS Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Test & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Temporary Files
+*.bak
+tmpclaude-*
+nul
+
+# Credentials (safety)
+.env
+*.key
+*.pem
+credentials.json
