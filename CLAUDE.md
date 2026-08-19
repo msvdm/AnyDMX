@@ -47,10 +47,15 @@ ArtNetReceiver ──┐                       ┌── DmxOutput (USB serial)
 | `AnyDMX.py` | Entry point; also dispatches `--vnet-helper` elevated mode before Qt loads |
 | `src/core/artnet_receiver.py` | Multi-socket UDP listener, ArtDMX parser, universe discovery, ArtPollReply |
 | `src/core/dmx_output.py` | Serial DMX sender thread, auto-reconnect |
-| `src/core/engine.py` | Universe buffer + status snapshots; wires receiver → output |
+| `src/core/engine.py` | Universe buffer + status snapshots + `RateMeter`; wires receiver → output |
 | `src/core/ports.py` | COM port enumeration + chip ID (FTDI/CH340/CP210x/Prolific) |
 | `src/core/vnet.py` | Virtual "AnyDMX" lighting adapter: create/remove, UAC elevation |
-| `src/gui/main_window.py` | Single-window GUI, 100 ms status polling |
+| `src/gui/main_window.py` | Single-window GUI: input panel, output panel, 100 ms status polling |
+| `src/gui/frameless.py` | `FramelessWindow`: move/resize/clamp — everything the decorations used to do |
+| `src/gui/title_bar.py` | The window's own title bar (the window is frameless) |
+| `src/gui/status_text.py` | Snapshot → LED, one-word state, and the bottom sentence (pure, no Qt) |
+| `src/gui/universe_bar.py` | The discovered-universe chips, as a column or a row |
+| `src/gui/vnet_dialog.py` | Lighting-interface pop-up: create/remove the virtual adapter |
 | `src/gui/channel_view.py` | Live 512-channel grid (32×16) |
 | `src/gui/styles.py` | Color palette + QSS |
 | `src/utils/paths.py` | Portable paths (source run vs PyInstaller exe) |
@@ -78,12 +83,49 @@ from worker threads.
   `_wait_drained()` and the `MIN_FRAME_PERIOD` floor.
 - Rates shown in the GUI are averaged over `RATE_WINDOW`, not the 100 ms poll:
   3-4 frames per poll means timer jitter alone swings the figure by ±5 fps.
+  **Every** rate goes through `engine.RateMeter` for this reason — the packet
+  rate, the frame rate, and the per-universe rate on each chip. A rate computed
+  straight off the poll interval is the bug this class exists to prevent, and
+  it looks like a working feature until someone reads the number.
 - **~34 fps is a deliberate choice, not a limitation to fix.** Consoles run
   25-44 Hz; the only way past the ceiling is sending fewer channels per frame,
   which re-creates the stale-tail confusion the GUI now exists to explain — a
   speedup no one can see, paid for in the one thing that already cost a session.
   Reopen this only if a fast pan/tilt visibly steps through AnyDMX but not when
   the console drives the rig directly.
+
+## Window geometry facts — measured, do not re-litigate
+
+- The desktop is smaller than the monitor. The dev machine's 4K screen at 300%
+  scaling reports **1280x720, work area 1280x680** to Qt, and every size in the
+  GUI is in those logical pixels.
+- A window larger than the work area gets shoved around by the window manager
+  while it is being placed, so `fit_on_screen()` clamps every programmatic
+  resize to it and `_settle_on_screen()` checks where it landed one event-loop
+  pass later, once the layout has settled.
+- **The window is frameless** (`Qt.FramelessWindowHint`): a window manager's
+  title bar is outside the widget tree and no stylesheet can reach it, so the
+  bar is drawn by `src/gui/title_bar.py` instead. That means move, resize,
+  minimise, maximise and close are the app's job now:
+  - drag and resize are handed back to the platform with `startSystemMove()` /
+    `startSystemResize()`, never reimplemented with mouse arithmetic — that is
+    what keeps snapping and tiling native on X11 and Windows
+  - all four edges live in `FramelessWindow`: the border is the margin strip
+    around the body, caught in `eventFilter()`, and the title bar routes its
+    top-edge press through the same `begin_resize()`. There is one rule about
+    when the window may be resized, not one per file
+  - there is no frame outside the window any more, so `max_client_size()` is
+    simply the work area
+  - Muffin's rule about hiding the maximise button on a window that cannot fit
+    no longer applies — the maximise button is ours. Keep the minimum modest
+    anyway; a window that cannot shrink to the screen is still a bad window
+- **The panel row's height is a budget spent against the channel grid.** The
+  grid needs ~320 px (16 rows over `MIN_TEXT_H`) before it will label its cells,
+  and on a 680 px work area there is nothing else to take it from. That is why
+  the universes move to the bottom strip when the drawer opens, why Clear sits
+  beside the drawer button rather than under it, and why the paddings in the
+  panels are as small as they are. Adding a row to either panel takes the cell
+  labels away on that machine — check with the drawer open before adding one.
 
 ## Windows networking facts — verified by experiment, do not re-litigate
 
@@ -110,9 +152,29 @@ from worker threads.
   has no `/add-device` and `devcon.exe` is not shipped. Creation goes through
   SetupAPI via ctypes (`netloop.inf`, hardware ID `*MSLOOP`). Removal can use
   `pnputil /remove-device`.
+- **`ctypes.wintypes` is wrong off Windows.** It maps `DWORD`/`BOOL` onto
+  `c_ulong`/`c_long`, which are 32-bit only under Windows' LLP64 model — on an
+  LP64 host they widen to 64 bits and every SetupAPI struct is laid out wrong
+  (`_SP_DEVINFO_DATA` came out 48 bytes instead of 32, and the layout test that
+  caught it was simply left failing). `vnet.py` therefore spells the scalars as
+  fixed widths (`c_uint32`, `c_uint16`) and the structs are correct on any host.
+  Do not "simplify" them back to `wintypes`; handle and string types are
+  pointer-sized everywhere and are the only ones that still come from there.
 
 ## Invariants — do not break
 
+- There is no Start button: the bridge arms itself on startup and re-arms on
+  every selection change. A failed bind is reported in the bottom status line,
+  never a modal — the GUI must stay usable so the user can pick another port
+- The window is two panels: everything Art-Net on the left, everything DMX on
+  the right, one dynamic sentence across the bottom. It opens at the compact
+  layout's own floor (`COMPACT_W` x `COMPACT_H`) and nothing in the panels may
+  be allowed to stretch it, which is why the status label's width policy is
+  Ignored, the discovered-universe list is scrolled, and its chips drop the
+  source address (never the LOCAL TEST marker) while the column is narrow
+- Each drawer state remembers the size it was last left at, for the session
+  only: the arrow toggles between two windows the user has already sized, and a
+  restart is back to the compact default
 - DMX output keeps streaming the last frame when Art-Net input stops
   (fixtures need continuous DMX; a paused console must not black out the rig)
 - A held frame must always be *labelled* as held. Levels nobody is sending look
