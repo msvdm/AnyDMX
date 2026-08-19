@@ -37,10 +37,34 @@ def fake_runner(calls, stdout="", returncode=0, stderr=""):
 
 # --------------------------------------------------------- struct layout
 
-def test_devinfo_struct_is_sized_for_this_architecture():
-    """Reserved is ULONG_PTR; a DWORD there would under-size cbSize on x64."""
-    expected = 32 if ctypes.sizeof(ctypes.c_void_p) == 8 else 24
-    assert ctypes.sizeof(vnet._SP_DEVINFO_DATA) == expected
+def test_windows_scalars_keep_their_true_widths():
+    """DWORD/BOOL are 32-bit in the Windows ABI, whatever the host's c_long is.
+
+    ctypes.wintypes maps them onto c_ulong/c_long, which widen to 64 bits on an
+    LP64 host — so the structs below have to spell the widths out to stay right
+    when the suite runs off Windows.
+    """
+    assert ctypes.sizeof(vnet.DWORD) == 4
+    assert ctypes.sizeof(vnet.WORD) == 2
+    assert ctypes.sizeof(vnet.BOOL) == 4
+    assert ctypes.sizeof(vnet.ULONG) == 4
+    assert ctypes.sizeof(vnet._GUID) == 16
+
+
+def test_devinfo_struct_matches_the_windows_layout():
+    """Reserved is ULONG_PTR; a DWORD there would under-size cbSize on x64.
+
+    Offsets rather than a total: they pin every field independently, and they
+    are the thing SetupAPI actually reads.
+    """
+    fields = vnet._SP_DEVINFO_DATA
+    pointer = ctypes.sizeof(ctypes.c_void_p)
+    assert fields.cbSize.offset == 0
+    assert fields.ClassGuid.offset == 4
+    assert fields.DevInst.offset == 20
+    assert fields.Reserved.offset == 24
+    assert fields.Reserved.size == pointer
+    assert ctypes.sizeof(fields) == 24 + pointer
 
 
 # ------------------------------------------------------- privilege gating

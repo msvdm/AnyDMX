@@ -153,6 +153,12 @@ class FakeOutput:
         pass
 
 
+def _wind_back(engine, seconds):
+    """Age both rate windows, so the next get_status() closes one."""
+    for meter in (engine._packet_rate, engine._frame_rate):
+        meter._last_time -= seconds
+
+
 def test_rates_ignore_windows_shorter_than_the_averaging_period():
     """A 100 ms poll cannot measure a 35 Hz stream: jitter alone swings it."""
     engine = _running_engine()
@@ -160,7 +166,7 @@ def test_rates_ignore_windows_shorter_than_the_averaging_period():
     engine._reset_rates()
     engine._output.frames_total = 4
     assert engine.get_status()["dmx_fps"] == 0.0   # window too short — no guess
-    engine._last_poll_time -= engine_module.RATE_WINDOW
+    _wind_back(engine, engine_module.RATE_WINDOW)
     engine._output.frames_total = 20
     assert engine.get_status()["dmx_fps"] > 0.0
 
@@ -169,7 +175,7 @@ def test_rate_holds_its_last_value_between_windows():
     engine = _running_engine()
     engine._output = FakeOutput()
     engine._reset_rates()
-    engine._last_poll_time -= 1.0
+    _wind_back(engine, 1.0)
     engine._output.frames_total = 35
     first = engine.get_status()["dmx_fps"]
     assert 30 < first < 40
@@ -180,8 +186,47 @@ def test_rate_holds_its_last_value_between_windows():
 def test_rates_reset_when_the_engine_restarts():
     engine = _running_engine()
     engine._output = FakeOutput()
-    engine._last_poll_time -= 1.0
+    _wind_back(engine, 1.0)
     engine._output.frames_total = 35
     engine.get_status()
     engine.stop()
     assert engine.get_status()["dmx_fps"] == 0.0
+
+
+# ------------------------------------------------------------- rate meter
+
+def test_rate_meter_holds_zero_until_a_full_window():
+    meter = engine_module.RateMeter(window=0.5)
+    assert meter.update(10, now=meter._last_time + 0.4) == 0.0
+
+
+def test_rate_meter_averages_over_the_elapsed_window():
+    meter = engine_module.RateMeter(window=0.5)
+    start = meter._last_time
+    assert meter.update(20, now=start + 1.0) == 20.0
+
+
+def test_rate_meter_measures_from_the_last_computation_not_the_last_call():
+    """Extra reads inside a window must not shorten it — only close it early."""
+    meter = engine_module.RateMeter(window=0.5)
+    start = meter._last_time
+    for offset in (0.1, 0.2, 0.3, 0.4):
+        assert meter.update(10, now=start + offset) == 0.0
+    # 20 events over the full 1.0 s since the last computation, not since 0.4 s.
+    assert meter.update(20, now=start + 1.0) == 20.0
+
+
+def test_rate_meter_ignores_a_counter_that_went_backwards():
+    """A restarted receiver resets its counter; a negative rate is nonsense."""
+    meter = engine_module.RateMeter(window=0.5)
+    start = meter._last_time
+    meter.update(100, now=start + 1.0)
+    assert meter.update(5, now=start + 2.0) == 0.0
+
+
+def test_rate_meter_reset_clears_the_held_figure():
+    meter = engine_module.RateMeter(window=0.5)
+    meter.update(20, now=meter._last_time + 1.0)
+    assert meter.rate > 0
+    meter.reset()
+    assert meter.rate == 0.0

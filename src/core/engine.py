@@ -22,6 +22,41 @@ RATE_WINDOW = 0.5            # seconds of history behind each rate figure
 POLL_SEEN_TIMEOUT = 8.0      # seconds a console's ArtPoll counts as "discovered us"
 
 
+class RateMeter:
+    """Events per second off a monotonic cumulative counter.
+
+    Every rate in this app is read far more often than it can be measured: a
+    100 ms sample of a ~35 Hz stream holds three or four events, so ordinary
+    timer jitter alone swings the answer by ±5. The figure is therefore
+    averaged over RATE_WINDOW and *held* between windows rather than
+    recomputed per read — which is only correct because the elapsed time is
+    measured from the last computation, not from the last call.
+    """
+
+    def __init__(self, window=RATE_WINDOW):
+        self._window = window
+        self.rate = 0.0
+        self._last_time = time.monotonic()
+        self._last_count = 0
+
+    def reset(self, now=None):
+        """Counters restart with each receiver/output, so the window must too."""
+        self._last_time = time.monotonic() if now is None else now
+        self._last_count = 0
+        self.rate = 0.0
+
+    def update(self, count, now=None):
+        """Feed the cumulative total; returns the current rate."""
+        now = time.monotonic() if now is None else now
+        dt = now - self._last_time
+        if dt >= self._window:
+            self.rate = max(0.0, (count - self._last_count) / dt)
+            self._last_time = now
+            self._last_count = count
+        return self.rate
+
+
+
 class Engine:
     def __init__(self):
         self._buffer = bytearray(DMX_CHANNELS)
@@ -29,12 +64,8 @@ class Engine:
         self._receiver = None
         self._output = None
         self.running = False
-        # For rate calculations between get_status() polls
-        self._last_poll_time = time.monotonic()
-        self._last_packets = 0
-        self._last_frames = 0
-        self._pps = 0.0
-        self._fps = 0.0
+        self._packet_rate = RateMeter()
+        self._frame_rate = RateMeter()
 
     def start(self, com_port, universe, fps=40, bind_ip=""):
         """Start bridging. Empty com_port = monitor mode (Art-Net in only).
@@ -65,12 +96,8 @@ class Engine:
         log.info("Engine stopped")
 
     def _reset_rates(self):
-        """Counters restart with each receiver/output, so the window must too."""
-        self._last_poll_time = time.monotonic()
-        self._last_packets = 0
-        self._last_frames = 0
-        self._pps = 0.0
-        self._fps = 0.0
+        self._packet_rate.reset()
+        self._frame_rate.reset()
 
     def set_universe(self, universe):
         """Switch the listened-to universe, dropping what the old one left.
@@ -98,18 +125,18 @@ class Engine:
             self._buffer[:] = bytes(DMX_CHANNELS)
 
     def get_status(self):
-        """Snapshot for the GUI. Rates are computed between successive calls."""
+        """Snapshot for the GUI.
+
+        Not a pure read: this is the sampling point for both rate meters, so
+        it expects one caller on one cadence — the GUI's poll timer. A second
+        caller would not corrupt the figures (each window is measured from the
+        last computation) but would close the windows early on both.
+        """
         now = time.monotonic()
-        dt = now - self._last_poll_time
-        packets = self._receiver.packets_total if self._receiver else 0
-        frames = self._output.frames_total if self._output else 0
-        if dt >= RATE_WINDOW:
-            self._pps = max(0.0, (packets - self._last_packets) / dt)
-            self._fps = max(0.0, (frames - self._last_frames) / dt)
-            self._last_poll_time = now
-            self._last_packets = packets
-            self._last_frames = frames
-        pps, fps = self._pps, self._fps
+        pps = self._packet_rate.update(
+            self._receiver.packets_total if self._receiver else 0, now)
+        fps = self._frame_rate.update(
+            self._output.frames_total if self._output else 0, now)
 
         artnet_active = bool(
             self._receiver

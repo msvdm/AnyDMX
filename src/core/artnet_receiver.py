@@ -291,16 +291,16 @@ class ArtNetReceiver:
         parsed = parse_packet(data)
         if parsed is None:
             return
+        # Every kind of packet is deduplicated the same way, so this is asked
+        # once — before deciding what the packet is.
+        if self._is_duplicate(data, addr[0], label):
+            return
         if parsed[0] == "poll":
-            if self._is_duplicate(data, addr[0], label):
-                return
             self.last_poll_ip = addr[0]
             self.last_poll_time = time.monotonic()
             self._send_poll_reply(addr)
             return
         _, universe, channels = parsed
-        if self._is_duplicate(data, addr[0], label):
-            return
         self._note_universe(universe, addr[0])
         if universe != self.universe:
             return

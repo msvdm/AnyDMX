@@ -126,16 +126,28 @@ def artnet_range_addresses():
 
 # --------------------------------------------------------------- SetupAPI
 
+# Windows scalar types at their true widths. ctypes.wintypes maps DWORD and
+# BOOL onto c_ulong/c_long, which are 32-bit only under Windows' LLP64 model —
+# on an LP64 host they silently become 64-bit and every structure below is laid
+# out wrong. Fixed-width spellings are correct on any host, which is what lets
+# the layout tests still mean something when the suite runs off Windows.
+# Handle and string types are pointer-sized everywhere, so those stay wintypes.
+DWORD = ctypes.c_uint32
+WORD = ctypes.c_uint16
+BOOL = ctypes.c_int32
+ULONG = ctypes.c_uint32
+
+
 class _GUID(ctypes.Structure):
-    _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
-                ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+    _fields_ = [("Data1", DWORD), ("Data2", WORD),
+                ("Data3", WORD), ("Data4", ctypes.c_ubyte * 8)]
 
 
 class _SP_DEVINFO_DATA(ctypes.Structure):
     # Reserved is ULONG_PTR: a pointer field keeps cbSize correct on both
     # 32- and 64-bit, where a DWORD would silently under-size the struct.
-    _fields_ = [("cbSize", wintypes.DWORD), ("ClassGuid", _GUID),
-                ("DevInst", wintypes.DWORD),
+    _fields_ = [("cbSize", DWORD), ("ClassGuid", _GUID),
+                ("DevInst", DWORD),
                 ("Reserved", ctypes.POINTER(ctypes.c_ulong))]
 
 
@@ -157,31 +169,31 @@ def _setupapi():
     api.SetupDiCreateDeviceInfoList.restype = wintypes.HANDLE
     api.SetupDiCreateDeviceInfoW.argtypes = [
         wintypes.HANDLE, wintypes.LPCWSTR, ctypes.POINTER(_GUID),
-        wintypes.LPCWSTR, wintypes.HWND, wintypes.DWORD,
+        wintypes.LPCWSTR, wintypes.HWND, DWORD,
         ctypes.POINTER(_SP_DEVINFO_DATA)]
-    api.SetupDiCreateDeviceInfoW.restype = wintypes.BOOL
+    api.SetupDiCreateDeviceInfoW.restype = BOOL
     api.SetupDiSetDeviceRegistryPropertyW.argtypes = [
-        wintypes.HANDLE, ctypes.POINTER(_SP_DEVINFO_DATA), wintypes.DWORD,
-        ctypes.c_char_p, wintypes.DWORD]
-    api.SetupDiSetDeviceRegistryPropertyW.restype = wintypes.BOOL
+        wintypes.HANDLE, ctypes.POINTER(_SP_DEVINFO_DATA), DWORD,
+        ctypes.c_char_p, DWORD]
+    api.SetupDiSetDeviceRegistryPropertyW.restype = BOOL
     api.SetupDiCallClassInstaller.argtypes = [
-        wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(_SP_DEVINFO_DATA)]
-    api.SetupDiCallClassInstaller.restype = wintypes.BOOL
+        DWORD, wintypes.HANDLE, ctypes.POINTER(_SP_DEVINFO_DATA)]
+    api.SetupDiCallClassInstaller.restype = BOOL
     api.SetupDiGetDeviceInstanceIdW.argtypes = [
         wintypes.HANDLE, ctypes.POINTER(_SP_DEVINFO_DATA), wintypes.LPWSTR,
-        wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
-    api.SetupDiGetDeviceInstanceIdW.restype = wintypes.BOOL
+        DWORD, ctypes.POINTER(DWORD)]
+    api.SetupDiGetDeviceInstanceIdW.restype = BOOL
     api.SetupDiDestroyDeviceInfoList.argtypes = [wintypes.HANDLE]
-    api.SetupDiDestroyDeviceInfoList.restype = wintypes.BOOL
+    api.SetupDiDestroyDeviceInfoList.restype = BOOL
     return api
 
 
 def _newdev():
     api = ctypes.WinDLL("newdev", use_last_error=True)
     api.UpdateDriverForPlugAndPlayDevicesW.argtypes = [
-        wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
-        ctypes.POINTER(wintypes.BOOL)]
-    api.UpdateDriverForPlugAndPlayDevicesW.restype = wintypes.BOOL
+        wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, DWORD,
+        ctypes.POINTER(BOOL)]
+    api.UpdateDriverForPlugAndPlayDevicesW.restype = BOOL
     return api
 
 
@@ -222,14 +234,14 @@ def create_device_node():
             _fail("Installing the device")
 
         buf = ctypes.create_unicode_buffer(MAX_DEVICE_ID_LEN)
-        needed = wintypes.DWORD()
+        needed = DWORD()
         if not api.SetupDiGetDeviceInstanceIdW(
                 dev_info, ctypes.byref(data), buf, MAX_DEVICE_ID_LEN,
                 ctypes.byref(needed)):
             _fail("Reading the new device ID")
         instance_id = buf.value
 
-        reboot = wintypes.BOOL(False)
+        reboot = BOOL(False)
         if not _newdev().UpdateDriverForPlugAndPlayDevicesW(
                 None, HARDWARE_ID, LOOPBACK_INF, INSTALLFLAG_FORCE,
                 ctypes.byref(reboot)):
@@ -384,13 +396,13 @@ HELPER_FLAG = "--vnet-helper"
 
 
 class _SHELLEXECUTEINFOW(ctypes.Structure):
-    _fields_ = [("cbSize", wintypes.DWORD), ("fMask", ctypes.c_ulong),
+    _fields_ = [("cbSize", DWORD), ("fMask", ULONG),
                 ("hwnd", wintypes.HWND), ("lpVerb", wintypes.LPCWSTR),
                 ("lpFile", wintypes.LPCWSTR), ("lpParameters", wintypes.LPCWSTR),
                 ("lpDirectory", wintypes.LPCWSTR), ("nShow", ctypes.c_int),
                 ("hInstApp", wintypes.HINSTANCE), ("lpIDList", ctypes.c_void_p),
                 ("lpClass", wintypes.LPCWSTR), ("hkeyClass", wintypes.HKEY),
-                ("dwHotKey", wintypes.DWORD), ("hIcon", wintypes.HANDLE),
+                ("dwHotKey", DWORD), ("hIcon", wintypes.HANDLE),
                 ("hProcess", wintypes.HANDLE)]
 
 
@@ -456,7 +468,7 @@ def _shell_execute_runas(exe, params):
     shell32 = ctypes.WinDLL("shell32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(_SHELLEXECUTEINFOW)]
-    shell32.ShellExecuteExW.restype = wintypes.BOOL
+    shell32.ShellExecuteExW.restype = BOOL
 
     info = _SHELLEXECUTEINFOW()
     info.cbSize = ctypes.sizeof(_SHELLEXECUTEINFOW)
