@@ -6,11 +6,13 @@ COLORS = {
     "border": "#2c313c",
     "text": "#d6dae3",
     "text_dim": "#7d8493",
+    "text_mid": "#c3cad8",  # labels on the grid: legible on the lighter cells
     "accent": "#3d9bff",
     "ok": "#39c26d",
     "err": "#e5534b",
     "warn": "#d4a72c",
-    "stale": "#4a5162",  # levels nothing is transmitting any more
+    "cell": "#2e3442",   # grid cell ground, lighter than the panel
+    "stale": "#5b6478",  # levels nothing is transmitting any more
 }
 
 APP_QSS = f"""

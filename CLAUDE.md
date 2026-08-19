@@ -78,6 +78,12 @@ from worker threads.
   `_wait_drained()` and the `MIN_FRAME_PERIOD` floor.
 - Rates shown in the GUI are averaged over `RATE_WINDOW`, not the 100 ms poll:
   3-4 frames per poll means timer jitter alone swings the figure by ±5 fps.
+- **~34 fps is a deliberate choice, not a limitation to fix.** Consoles run
+  25-44 Hz; the only way past the ceiling is sending fewer channels per frame,
+  which re-creates the stale-tail confusion the GUI now exists to explain — a
+  speedup no one can see, paid for in the one thing that already cost a session.
+  Reopen this only if a fast pan/tilt visibly steps through AnyDMX but not when
+  the console drives the rig directly.
 
 ## Windows networking facts — verified by experiment, do not re-litigate
 

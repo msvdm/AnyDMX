@@ -160,10 +160,6 @@ class MainWindow(QMainWindow):
         root.addWidget(self.channel_view, stretch=1)
 
         legend = QHBoxLayout()
-        hint = QLabel("512 channels — hover a cell for its value; "
-                      "grey = held or not in the current frame")
-        hint.setObjectName("dim")
-        legend.addWidget(hint)
         legend.addStretch()
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.setToolTip("Zero the universe buffer — sends all-zero DMX")
@@ -172,7 +168,7 @@ class MainWindow(QMainWindow):
         root.addLayout(legend)
 
         self.setCentralWidget(central)
-        self.resize(760, 480)
+        self.resize(1520, 820)
 
     def _set_led(self, led, state):
         color = {"ok": COLORS["ok"], "err": COLORS["err"],
