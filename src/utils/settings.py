@@ -17,6 +17,8 @@ DEFAULTS = {
     "vnet_ip": "2.100.100.0",
     "vnet_prefix": 8,
     "vnet_instance_id": "",
+    # Channel-grid drawer: False runs the compact window.
+    "channels_expanded": True,
 }
 
 

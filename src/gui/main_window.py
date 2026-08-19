@@ -5,7 +5,8 @@ import time
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QPushButton, QSizePolicy, QSpinBox, QVBoxLayout,
+    QWidget,
 )
 
 from src.core import vnet
@@ -20,18 +21,31 @@ from src.utils.settings import load_settings, save_settings
 log = get_logger(__name__)
 
 POLL_MS = 100  # GUI refresh interval
+DEFAULT_HEIGHT = 820  # window height with the channel drawer open
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AnyDMX — Art-Net to DMX bridge")
+        # Spelled out so every window manager offers maximise. Muffin hides it
+        # on a window whose minimum size cannot fit the screen, which is why
+        # the channel grid's minimum has to stay modest.
+        self.setWindowFlags(
+            Qt.Window
+            | Qt.WindowTitleHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinimizeButtonHint
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowCloseButtonHint
+        )
         self.engine = Engine()
         self.settings = load_settings()
         self._uni_buttons = {}
         self._discovered_keys = None
         self._last_uni_packets = {}
         self._last_uni_time = time.monotonic()
+        self._expanded_height = None
         self._build_ui()
         self._refresh_ports()
         self._restore_settings()
@@ -155,9 +169,18 @@ class MainWindow(QMainWindow):
         root.addWidget(discovered_frame)
         self._rebuild_discovered(())
 
-        # Channel grid
+        # Channel grid — collapsible, since it is by far the tallest thing
+        # in the window and most of the time nobody is reading levels.
         self.channel_view = ChannelView()
         root.addWidget(self.channel_view, stretch=1)
+
+        # Takes up the slack while the grid is hidden, so the panels above keep
+        # their natural height instead of stretching to fill the window.
+        self._collapse_spacer = QWidget()
+        self._collapse_spacer.setSizePolicy(QSizePolicy.Expanding,
+                                            QSizePolicy.Expanding)
+        self._collapse_spacer.setVisible(False)
+        root.addWidget(self._collapse_spacer, stretch=1)
 
         legend = QHBoxLayout()
         legend.addStretch()
@@ -165,15 +188,57 @@ class MainWindow(QMainWindow):
         self.clear_btn.setToolTip("Zero the universe buffer — sends all-zero DMX")
         self.clear_btn.clicked.connect(self._clear_buffer)
         legend.addWidget(self.clear_btn)
+        self.channels_toggle = QPushButton()
+        self.channels_toggle.setObjectName("drawer")
+        self.channels_toggle.setCheckable(True)
+        self.channels_toggle.setChecked(True)
+        self.channels_toggle.clicked.connect(self._toggle_channels)
+        legend.addWidget(self.channels_toggle)
         root.addLayout(legend)
+        self._sync_channels_toggle()
 
         self.setCentralWidget(central)
-        self.resize(1520, 820)
+        self.resize(1520, DEFAULT_HEIGHT)
 
     def _set_led(self, led, state):
         color = {"ok": COLORS["ok"], "err": COLORS["err"],
                  "warn": COLORS["warn"], "off": COLORS["text_dim"]}[state]
         led.setStyleSheet(f"color: {color}; font-size: 16px;")
+
+    # ------------------------------------------------------------- drawer
+
+    def _sync_channels_toggle(self):
+        """Arrow points the way the drawer is about to move."""
+        expanded = self.channels_toggle.isChecked()
+        self.channels_toggle.setText(
+            "▲  DMX values" if expanded else "▼  DMX values")
+        self.channels_toggle.setToolTip(
+            "Hide the 512-channel grid and run compact" if expanded
+            else "Show the 512-channel grid")
+
+    def _toggle_channels(self, expanded):
+        if expanded:
+            self.channel_view.setVisible(True)
+            self._collapse_spacer.setVisible(False)
+            self._sync_channels_toggle()
+            if not (self.isMaximized() or self.isFullScreen()):
+                self.resize(self.width(), self._expanded_height or DEFAULT_HEIGHT)
+        else:
+            # Remember the open height so reopening lands where it was left.
+            if self.channel_view.isVisible():
+                self._expanded_height = self.height()
+            self.channel_view.setVisible(False)
+            self._collapse_spacer.setVisible(True)
+            self._sync_channels_toggle()
+            # The layout only reports its shrunken height once it has settled,
+            # so the resize has to wait for the next event-loop pass.
+            QTimer.singleShot(0, self._shrink_to_fit)
+        self._save_current_settings()
+
+    def _shrink_to_fit(self):
+        if self.isMaximized() or self.isFullScreen():
+            return
+        self.resize(self.width(), self.sizeHint().height())
 
     # ------------------------------------------------------------ actions
 
@@ -221,6 +286,9 @@ class MainWindow(QMainWindow):
         self.vnet_ip_edit.setText(self.settings.get("vnet_ip", vnet.DEFAULT_IP))
         self.vnet_prefix_spin.setValue(
             int(self.settings.get("vnet_prefix", vnet.DEFAULT_PREFIX)))
+        expanded = bool(self.settings.get("channels_expanded", True))
+        self.channels_toggle.setChecked(expanded)
+        self._toggle_channels(expanded)
 
     # --------------------------------------------------- lighting interface
 
@@ -351,6 +419,7 @@ class MainWindow(QMainWindow):
         self.settings["bind_ip"] = self.nic_combo.currentData() or ""
         self.settings["vnet_ip"] = self.vnet_ip_edit.text().strip()
         self.settings["vnet_prefix"] = self.vnet_prefix_spin.value()
+        self.settings["channels_expanded"] = self.channels_toggle.isChecked()
         save_settings(self.settings)
 
     # --------------------------------------------------- discovered universes

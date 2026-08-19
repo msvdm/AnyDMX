@@ -63,6 +63,16 @@ QPushButton#start {{
 QPushButton#start:checked {{
     background-color: {COLORS['err']};
 }}
+QPushButton#drawer {{
+    background-color: transparent;
+    color: {COLORS['text_dim']};
+    padding: 6px 14px;
+    font-size: 12px;
+}}
+QPushButton#drawer:hover {{
+    color: {COLORS['text']};
+    border-color: {COLORS['accent']};
+}}
 QToolTip {{
     background-color: {COLORS['panel']};
     color: {COLORS['text']};

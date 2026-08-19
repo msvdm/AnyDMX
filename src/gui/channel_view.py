@@ -42,7 +42,9 @@ class ChannelView(QWidget):
         self._channels = bytes(512)
         self._live_len = 512
         self._holding = False
-        self.setMinimumSize(960, 420)
+        # Low enough that the whole window fits a small screen; the grid
+        # drops its labels and draws bars only below the text thresholds.
+        self.setMinimumSize(640, 240)
         self.setMouseTracking(True)
         self._bg = QColor(COLORS["panel"])
         self._cell_bg = QColor(COLORS["cell"])
