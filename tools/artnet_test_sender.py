@@ -37,6 +37,13 @@ def main():
     args = parser.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Loud on purpose: a simulator mistaken for a real console once made a
+    # broken bridge look like a working one. It must never read as hardware.
+    print("=" * 68)
+    print("  SIMULATED ART-NET — THIS IS NOT YOUR LIGHTING CONSOLE")
+    print("  Any DMX output produced while this runs proves only that the")
+    print("  output path works. It says nothing about your console.")
+    print("=" * 68)
     print(f"Sending animated ArtDMX to {args.ip}:{ARTNET_PORT} "
           f"universe {args.universe} at {args.fps} fps — Ctrl+C to stop")
     sequence = 0
@@ -53,7 +60,7 @@ def main():
                         (args.ip, ARTNET_PORT))
             time.sleep(1 / args.fps)
     except KeyboardInterrupt:
-        print("stopped")
+        print("simulated Art-Net stopped")
         return 0
 
 

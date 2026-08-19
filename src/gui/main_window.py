@@ -1,12 +1,16 @@
 """Main window: port/universe selection, status indicators, live channel grid."""
 
+import time
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-    QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from src.core.engine import Engine
+from src.core import vnet
+from src.core.artnet_receiver import LOOPBACK, list_local_ipv4
+from src.core.engine import ARTNET_ACTIVE_TIMEOUT, Engine
 from src.core.ports import list_serial_ports
 from src.gui.channel_view import ChannelView
 from src.gui.styles import COLORS
@@ -24,9 +28,16 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("AnyDMX — Art-Net to DMX bridge")
         self.engine = Engine()
         self.settings = load_settings()
+        self._uni_buttons = {}
+        self._discovered_keys = None
+        self._last_uni_packets = {}
+        self._last_uni_time = time.monotonic()
         self._build_ui()
         self._refresh_ports()
         self._restore_settings()
+        # Deferred: querying the adapter costs a PowerShell round trip, and the
+        # window should paint before we spend a second on it.
+        QTimer.singleShot(0, self._refresh_vnet)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
         self._timer.start(POLL_MS)
@@ -48,9 +59,19 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.port_combo)
         refresh_btn = QPushButton("⟳")
         refresh_btn.setFixedWidth(34)
-        refresh_btn.setToolTip("Rescan COM ports")
-        refresh_btn.clicked.connect(self._refresh_ports)
+        refresh_btn.setToolTip(
+            "Rescan COM ports, network interfaces, and the lighting interface")
+        refresh_btn.clicked.connect(self._rescan)
         controls.addWidget(refresh_btn)
+        controls.addSpacing(16)
+        controls.addWidget(QLabel("Network:"))
+        self.nic_combo = QComboBox()
+        self.nic_combo.setMinimumWidth(150)
+        self.nic_combo.setToolTip(
+            "Interface to listen on and advertise as an Art-Net node.\n"
+            "All interfaces works for most setups; pick a specific IP on\n"
+            "multi-NIC machines (e.g. a dedicated lighting network).")
+        controls.addWidget(self.nic_combo)
         controls.addSpacing(16)
         controls.addWidget(QLabel("Universe:"))
         self.universe_spin = QSpinBox()
@@ -90,6 +111,50 @@ class MainWindow(QMainWindow):
         self._set_led(self.artnet_led, "off")
         self._set_led(self.dmx_led, "off")
 
+        # The lighting interface: what gives an auto-picking console a
+        # 2.x address to send to. Without one, dot2 emits nothing at all.
+        vnet_frame = QFrame()
+        vnet_frame.setObjectName("panel")
+        vnet_row = QHBoxLayout(vnet_frame)
+        vnet_row.setContentsMargins(12, 8, 12, 8)
+        vnet_row.setSpacing(8)
+        vnet_row.addWidget(QLabel("Lighting interface:"))
+        self.vnet_status = QLabel("checking…")
+        self.vnet_status.setObjectName("dim")
+        vnet_row.addWidget(self.vnet_status, stretch=1)
+        self.vnet_ip_edit = QLineEdit()
+        self.vnet_ip_edit.setFixedWidth(120)
+        self.vnet_ip_edit.setToolTip(
+            "Address for the virtual adapter. Consoles that auto-pick an "
+            "Art-Net interface only accept the 2.x.x.x range.")
+        vnet_row.addWidget(self.vnet_ip_edit)
+        vnet_row.addWidget(QLabel("/"))
+        self.vnet_prefix_spin = QSpinBox()
+        self.vnet_prefix_spin.setRange(1, 32)
+        self.vnet_prefix_spin.setFixedWidth(56)
+        vnet_row.addWidget(self.vnet_prefix_spin)
+        self.vnet_create_btn = QPushButton("Create")
+        self.vnet_create_btn.clicked.connect(self._create_vnet)
+        vnet_row.addWidget(self.vnet_create_btn)
+        self.vnet_remove_btn = QPushButton("Remove")
+        self.vnet_remove_btn.clicked.connect(self._remove_vnet)
+        vnet_row.addWidget(self.vnet_remove_btn)
+        root.addWidget(vnet_frame)
+
+        # Everything actually on the wire — so nobody has to guess a universe
+        discovered_frame = QFrame()
+        discovered_frame.setObjectName("panel")
+        discovered = QVBoxLayout(discovered_frame)
+        discovered.setContentsMargins(12, 8, 12, 8)
+        caption = QLabel("Art-Net seen on this PC:")
+        caption.setObjectName("dim")
+        discovered.addWidget(caption)
+        self.discovered_row = QHBoxLayout()
+        self.discovered_row.setSpacing(6)
+        discovered.addLayout(self.discovered_row)
+        root.addWidget(discovered_frame)
+        self._rebuild_discovered(())
+
         # Channel grid
         self.channel_view = ChannelView()
         root.addWidget(self.channel_view, stretch=1)
@@ -109,6 +174,11 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ actions
 
+    def _rescan(self):
+        """The refresh button: COM ports, NICs, and the lighting interface."""
+        self._refresh_ports()
+        self._refresh_vnet()
+
     def _refresh_ports(self):
         current = self.port_combo.currentData()
         self.port_combo.clear()
@@ -120,6 +190,18 @@ class MainWindow(QMainWindow):
             idx = self.port_combo.findData(current)
             if idx >= 0:
                 self.port_combo.setCurrentIndex(idx)
+        self._refresh_nics()
+
+    def _refresh_nics(self):
+        current = self.nic_combo.currentData()
+        self.nic_combo.clear()
+        self.nic_combo.addItem("All interfaces", "")
+        for ip in list_local_ipv4():
+            self.nic_combo.addItem(ip, ip)
+        if current:
+            idx = self.nic_combo.findData(current)
+            if idx >= 0:
+                self.nic_combo.setCurrentIndex(idx)
 
     def _restore_settings(self):
         self.universe_spin.setValue(self.settings.get("universe", 0))
@@ -128,6 +210,99 @@ class MainWindow(QMainWindow):
             idx = self.port_combo.findData(saved_port)
             if idx >= 0:
                 self.port_combo.setCurrentIndex(idx)
+        saved_ip = self.settings.get("bind_ip", "")
+        if saved_ip:
+            idx = self.nic_combo.findData(saved_ip)
+            if idx >= 0:
+                self.nic_combo.setCurrentIndex(idx)
+        self.vnet_ip_edit.setText(self.settings.get("vnet_ip", vnet.DEFAULT_IP))
+        self.vnet_prefix_spin.setValue(
+            int(self.settings.get("vnet_prefix", vnet.DEFAULT_PREFIX)))
+
+    # --------------------------------------------------- lighting interface
+
+    def _refresh_vnet(self):
+        """Update the interface row.
+
+        Deliberately NOT driven from the 100 ms poll: it shells out to
+        PowerShell, which would stall the GUI ten times a second.
+        """
+        name = self.settings.get("vnet_name", vnet.ADAPTER_NAME)
+        try:
+            state = vnet.find_adapter(name)
+        except vnet.VNetError as e:
+            self.vnet_status.setText(f"could not be checked — {e}")
+            self.vnet_create_btn.setEnabled(True)
+            self.vnet_remove_btn.setEnabled(False)
+            return
+        if state:
+            prefix = state.get("prefix")
+            address = state.get("ip") or "no address"
+            if state.get("ip") and prefix:
+                address = f"{state['ip']}/{prefix}"
+            self.vnet_status.setText(
+                f"{state.get('name', name)} · {address} · {state.get('status', '?')}")
+            self.settings["vnet_instance_id"] = state.get("instance_id") or ""
+            self.vnet_create_btn.setEnabled(False)
+            self.vnet_remove_btn.setEnabled(True)
+            return
+        self.vnet_create_btn.setEnabled(True)
+        self.vnet_remove_btn.setEnabled(False)
+        try:
+            usable = vnet.artnet_range_addresses()
+        except vnet.VNetError:
+            usable = []
+        if usable:
+            self.vnet_status.setText(
+                f"not created — Art-Net range already present at {', '.join(usable)}")
+        else:
+            self.vnet_status.setText(
+                "not created — no 2.x/10.x address on this PC, so a console that "
+                "picks its own interface (dot2) will transmit nothing")
+
+    def _create_vnet(self):
+        name = self.settings.get("vnet_name", vnet.ADAPTER_NAME)
+        ip = self.vnet_ip_edit.text().strip()
+        prefix = self.vnet_prefix_spin.value()
+        self._run_vnet_task(lambda: vnet.request_create(name, ip, prefix),
+                            f"creating {name}…")
+
+    def _remove_vnet(self):
+        name = self.settings.get("vnet_name", vnet.ADAPTER_NAME)
+        confirm = QMessageBox.question(
+            self, "AnyDMX",
+            f"Remove the '{name}' network interface?\n\n"
+            "Any console sending Art-Net to it will stop reaching AnyDMX.")
+        if confirm != QMessageBox.Yes:
+            return
+        instance_id = self.settings.get("vnet_instance_id", "") or None
+        self._run_vnet_task(lambda: vnet.request_remove(instance_id, name),
+                            f"removing {name}…")
+
+    def _run_vnet_task(self, task, busy_text):
+        """One-shot adapter operation, with the GUI visibly busy while it runs."""
+        was_running = self.engine.running
+        if not vnet.is_admin():
+            busy_text += "  — approve the Windows permission prompt"
+        self.vnet_status.setText(busy_text)
+        self.vnet_create_btn.setEnabled(False)
+        self.vnet_remove_btn.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+        try:
+            task()
+        except vnet.VNetError as e:
+            QMessageBox.critical(self, "AnyDMX", str(e))
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._refresh_vnet()
+        self._refresh_nics()
+        self._save_current_settings()
+        if was_running:
+            # Rebind so the receiver picks up (or lets go of) the new address.
+            self._toggle_engine(False)
+            self.start_btn.setChecked(True)
+            self._toggle_engine(True)
 
     def _universe_changed(self, value):
         self.engine.set_universe(value)
@@ -137,7 +312,8 @@ class MainWindow(QMainWindow):
             port = self.port_combo.currentData()
             try:
                 self.engine.start(port, self.universe_spin.value(),
-                                  fps=self.settings.get("fps", 40))
+                                  fps=self.settings.get("fps", 40),
+                                  bind_ip=self.nic_combo.currentData() or "")
             except OSError as e:
                 QMessageBox.critical(
                     self, "AnyDMX",
@@ -158,7 +334,57 @@ class MainWindow(QMainWindow):
     def _save_current_settings(self):
         self.settings["com_port"] = self.port_combo.currentData() or ""
         self.settings["universe"] = self.universe_spin.value()
+        self.settings["bind_ip"] = self.nic_combo.currentData() or ""
+        self.settings["vnet_ip"] = self.vnet_ip_edit.text().strip()
+        self.settings["vnet_prefix"] = self.vnet_prefix_spin.value()
         save_settings(self.settings)
+
+    # --------------------------------------------------- discovered universes
+
+    def _rebuild_discovered(self, keys):
+        """Replace the strip of universe buttons. Only on set change."""
+        while self.discovered_row.count():
+            item = self.discovered_row.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._uni_buttons = {}
+        if not keys:
+            empty = QLabel("nothing yet — check that your lighting app's Art-Net output is enabled and bound to a real adapter, not 0.0.0.0")
+            empty.setObjectName("dim")
+            self.discovered_row.addWidget(empty)
+            self.discovered_row.addStretch()
+            return
+        for universe in keys:
+            btn = QPushButton()
+            btn.setCheckable(True)
+            btn.setToolTip("Listen to this universe")
+            btn.clicked.connect(
+                lambda _checked, u=universe: self.universe_spin.setValue(u))
+            self.discovered_row.addWidget(btn)
+            self._uni_buttons[universe] = btn
+        self.discovered_row.addStretch()
+
+    def _update_discovered(self, universes):
+        now = time.monotonic()
+        dt = max(now - self._last_uni_time, 1e-6)
+        keys = tuple(sorted(universes))
+        if keys != self._discovered_keys:
+            self._rebuild_discovered(keys)
+            self._discovered_keys = keys
+        selected = self.universe_spin.value()
+        for universe, btn in self._uni_buttons.items():
+            rec = universes[universe]
+            previous = self._last_uni_packets.get(universe, rec["packets"])
+            rate = max(0.0, (rec["packets"] - previous) / dt)
+            live = (now - rec["last_seen"]) < ARTNET_ACTIVE_TIMEOUT
+            src = rec["src"]
+            origin = f"{src} (local test sender)" if src == LOOPBACK else src
+            state = f"{rate:.0f} pkt/s" if live else "idle"
+            btn.setText(f"Universe {universe}  ·  {origin}  ·  {state}")
+            btn.setChecked(universe == selected)
+        self._last_uni_packets = {u: r["packets"] for u, r in universes.items()}
+        self._last_uni_time = now
 
     # ------------------------------------------------------------- update
 
@@ -166,15 +392,32 @@ class MainWindow(QMainWindow):
         if not self.engine.running:
             return
         st = self.engine.get_status()
+        universes = st["universes"]
+        self._update_discovered(universes)
+        others = sorted(u for u in universes if u != self.universe_spin.value())
         if st["artnet_active"]:
             self._set_led(self.artnet_led, "ok")
+            source = st["artnet_source"]
+            origin = (f"{source} — LOCAL TEST SENDER, not your console"
+                      if source == LOOPBACK else source)
             self.artnet_label.setText(
-                f"Art-Net: receiving from {st['artnet_source']} "
-                f"({st['artnet_pps']:.0f} pkt/s)")
+                f"Art-Net: receiving from {origin} ({st['artnet_pps']:.0f} pkt/s)")
+        elif others:
+            # The console is talking, just not on the universe we are listening to.
+            self._set_led(self.artnet_led, "warn")
+            listed = ", ".join(str(u) for u in others)
+            self.artnet_label.setText(
+                f"Art-Net: nothing on universe {self.universe_spin.value()} — "
+                f"but universe {listed} is arriving. Click it below.")
+        elif st["poller_ip"]:
+            self._set_led(self.artnet_led, "warn")
+            self.artnet_label.setText(
+                f"Art-Net: node visible to console at {st['poller_ip']} "
+                "— waiting for DMX on this universe")
         else:
             self._set_led(self.artnet_led, "warn")
             self.artnet_label.setText(
-                "Art-Net: listening on UDP 6454 — no data for this universe")
+                "Art-Net: listening on UDP 6454 — nothing is being sent")
         if not st["dmx_enabled"]:
             self._set_led(self.dmx_led, "warn")
             self.dmx_label.setText(

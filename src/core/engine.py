@@ -15,6 +15,7 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 ARTNET_ACTIVE_TIMEOUT = 2.0  # seconds without a packet before "no signal"
+POLL_SEEN_TIMEOUT = 8.0      # seconds a console's ArtPoll counts as "discovered us"
 
 
 class Engine:
@@ -29,11 +30,13 @@ class Engine:
         self._last_packets = 0
         self._last_frames = 0
 
-    def start(self, com_port, universe, fps=40):
-        """Start bridging. Empty com_port = monitor mode (Art-Net in only)."""
+    def start(self, com_port, universe, fps=40, bind_ip=""):
+        """Start bridging. Empty com_port = monitor mode (Art-Net in only).
+        Empty bind_ip = listen on all interfaces."""
         if self.running:
             self.stop()
-        self._receiver = ArtNetReceiver(universe, self._on_dmx)
+        self._receiver = ArtNetReceiver(universe, self._on_dmx,
+                                        bind_ip=bind_ip or "0.0.0.0")
         self._output = DmxOutput(com_port, self.get_channels, fps=fps) \
             if com_port else None
         self._receiver.start()  # raises OSError if port 6454 is taken
@@ -87,10 +90,16 @@ class Engine:
             and self._receiver.last_packet_time
             and (now - self._receiver.last_packet_time) < ARTNET_ACTIVE_TIMEOUT
         )
+        poller_ip = None
+        if (self._receiver and self._receiver.last_poll_time
+                and (now - self._receiver.last_poll_time) < POLL_SEEN_TIMEOUT):
+            poller_ip = self._receiver.last_poll_ip
         return {
             "running": self.running,
             "artnet_active": artnet_active,
             "artnet_source": self._receiver.last_source_ip if self._receiver else None,
+            "universes": self._receiver.get_universes() if self._receiver else {},
+            "poller_ip": poller_ip,
             "artnet_pps": pps,
             "dmx_enabled": self._output is not None,
             "dmx_connected": bool(self._output and self._output.connected),

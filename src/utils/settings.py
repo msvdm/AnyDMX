@@ -11,6 +11,12 @@ DEFAULTS = {
     "com_port": "",
     "universe": 0,
     "fps": 40,
+    "bind_ip": "",
+    # Dedicated lighting interface (see src/core/vnet.py)
+    "vnet_name": "AnyDMX",
+    "vnet_ip": "2.100.100.0",
+    "vnet_prefix": 8,
+    "vnet_instance_id": "",
 }
 
 

@@ -2,12 +2,27 @@
 
 Listens on UDP 6454, parses ArtDMX packets into a channel buffer callback,
 and answers ArtPoll so consoles discover AnyDMX as a real Art-Net node.
+The node also broadcasts unsolicited ArtPollReply on start and periodically,
+as the spec requires, so consoles and node scanners list it without polling.
+
+It binds one socket per local IPv4 as well as the wildcard address. Windows
+delivers unicast to the single most specific socket — system-wide, not just
+within this process — so a wildcard-only bind loses unicast Art-Net to any
+other app that bound a specific address first. Binding at both levels means
+nothing can be quietly stolen from us. Broadcast is copied to every matching
+socket, so the duplicate copies are filtered out again in _is_duplicate().
+
+Every universe seen is counted, not just the selected one, so the GUI can say
+"the console is sending universe 5" instead of "no data for this universe".
 """
 
+import select
 import socket
 import struct
+import subprocess
 import threading
 import time
+import uuid
 
 from src.utils.logger import get_logger
 
@@ -21,6 +36,64 @@ OP_DMX = 0x5000
 
 SHORT_NAME = b"AnyDMX"
 LONG_NAME = b"AnyDMX Art-Net to USB DMX bridge"
+
+ANNOUNCE_INTERVAL = 2.5  # seconds between unsolicited ArtPollReply broadcasts
+BROADCAST_ADDR = "255.255.255.255"
+LOOPBACK = "127.0.0.1"
+WILDCARD = "0.0.0.0"
+DEDUP_WINDOW = 0.02  # s — one broadcast reaching several of our sockets
+
+MAC_BYTES = uuid.getnode().to_bytes(6, "big")
+
+
+def list_local_ipv4():
+    """IPv4 addresses of this machine's interfaces (for the GUI NIC selector).
+
+    APIPA link-local addresses (169.254.x.x, from adapters that never got a
+    lease) sort last — they route nowhere, so they must not be picked as the
+    advertised node IP while a real network is available.
+    """
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        return []
+    ips = []
+    for info in infos:
+        ip = info[4][0]
+        if ip not in ips:
+            ips.append(ip)
+    ips.sort(key=lambda ip: ip.startswith("169.254."))
+    return ips
+
+
+def port_owner(port):
+    """Name the process holding a UDP port, or None. Used only in bind errors.
+
+    A contested 6454 is the classic silent failure here — another Art-Net app
+    binds it and this one simply never sees traffic. Naming the culprit turns
+    a mystery into a one-line fix.
+    """
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "UDP"], timeout=5,
+                             capture_output=True, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0].upper() == "UDP" \
+                and parts[1].rsplit(":", 1)[-1] == str(port):
+            pid = parts[-1]
+            return f"{_process_name(pid) or 'unknown process'} (PID {pid})"
+    return None
+
+
+def _process_name(pid):
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+                             timeout=5, capture_output=True, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.strip().split('","')[0].lstrip('"') or None
 
 
 def parse_packet(data):
@@ -76,7 +149,7 @@ def build_poll_reply(ip, universe):
     r += bytes([0, 0, 0, 0])                          # SwIn
     r += bytes([universe & 0x0F, 0, 0, 0])            # SwOut
     r += bytes(7)                                     # SwVideo/SwMacro/SwRemote/Spare/Style
-    r += bytes(6)                                     # MAC
+    r += MAC_BYTES                                    # MAC
     r += bytes(4)                                     # BindIp
     r += bytes([0])                                   # BindIndex
     r += bytes([0x08])                                # Status2: 15-bit port addresses
@@ -87,69 +160,228 @@ def build_poll_reply(ip, universe):
 class ArtNetReceiver:
     """Background UDP listener. Calls on_dmx(channels) for the selected universe."""
 
-    def __init__(self, universe, on_dmx, bind_ip="0.0.0.0"):
+    def __init__(self, universe, on_dmx, bind_ip=WILDCARD):
         self.universe = universe
         self._on_dmx = on_dmx
         self._bind_ip = bind_ip
-        self._sock = None
+        self._socks = []
+        self._labels = {}  # fileno -> bound address
+        self._announce_sock = None
         self._thread = None
         self._running = False
+        self._advertise_ip = WILDCARD
+        self._last_announce = 0.0
+        self._recent = {}  # (src, payload hash) -> (timestamp, {socket labels})
+        self._universes = {}
+        self._uni_lock = threading.Lock()
         # Stats (read by engine/GUI; single-writer, atomic assignments only)
         self.packets_total = 0
         self.last_source_ip = None
         self.last_packet_time = 0.0
+        self.last_poll_ip = None
+        self.last_poll_time = 0.0
+
+    # ------------------------------------------------------------ lifecycle
 
     def start(self):
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self._sock.bind((self._bind_ip, ARTNET_PORT))
-        self._sock.settimeout(0.5)
+        self._socks = self._bind_sockets()
+        self._announce_sock = self._pick_announce_sock()
+        self._advertise_ip = self._pick_advertise_ip()
+        self._last_announce = 0.0  # loop announces immediately on first pass
         self._running = True
         self._thread = threading.Thread(target=self._loop, name="ArtNetReceiver",
                                         daemon=True)
         self._thread.start()
-        log.info("Art-Net receiver listening on %s:%d (universe %d)",
-                 self._bind_ip, ARTNET_PORT, self.universe)
+        log.info("Art-Net receiver listening on %s:%d (universe %d), "
+                 "advertising as %s",
+                 ", ".join(self._labels[s.fileno()] for s in self._socks),
+                 ARTNET_PORT,
+                 self.universe, self._advertise_ip)
 
     def stop(self):
         self._running = False
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None
-        if self._sock:
-            self._sock.close()
-            self._sock = None
+        for sock in self._socks:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        self._socks = []
+        self._labels = {}  # fileno -> bound address
+        self._announce_sock = None
         log.info("Art-Net receiver stopped")
+
+    def _bind_sockets(self):
+        """One socket per address we want to be reachable at.
+
+        Raises OSError naming the offending process if nothing can be bound.
+        """
+        socks = []
+        labels = {}
+        errors = []
+        for addr in self._bind_addresses():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            try:
+                sock.bind((addr, ARTNET_PORT))
+            except OSError as e:
+                sock.close()
+                errors.append(f"{addr}: {e}")
+                log.warning("Could not bind %s:%d — %s", addr, ARTNET_PORT, e)
+                continue
+            sock.settimeout(0.5)
+            labels[sock.fileno()] = addr
+            socks.append(sock)
+        if not socks:
+            owner = port_owner(ARTNET_PORT)
+            detail = f" UDP {ARTNET_PORT} is held by {owner}." if owner else ""
+            raise OSError(f"Could not listen for Art-Net.{detail} "
+                          f"Tried: {'; '.join(errors)}")
+        self._labels = labels
+        return socks
+
+    def _bind_addresses(self):
+        """Wildcard + every local IPv4, or just the one interface if pinned."""
+        if self._bind_ip and self._bind_ip != WILDCARD:
+            return [self._bind_ip]
+        addrs = [WILDCARD]
+        for ip in list_local_ipv4() + [LOOPBACK]:
+            if ip not in addrs:
+                addrs.append(ip)
+        return addrs
+
+    def _pick_announce_sock(self):
+        """Socket used to send replies. Prefer the wildcard one for broadcast."""
+        for sock in self._socks:
+            if self._labels[sock.fileno()] == WILDCARD:
+                return sock
+        return self._socks[0]
+
+    # ----------------------------------------------------------------- loop
 
     def _loop(self):
         while self._running:
-            try:
-                data, addr = self._sock.recvfrom(2048)
-            except socket.timeout:
-                continue
-            except OSError:
-                break  # socket closed during stop()
-            parsed = parse_packet(data)
-            if parsed is None:
-                continue
-            if parsed[0] == "poll":
-                self._send_poll_reply(addr)
-            elif parsed[0] == "dmx":
-                _, universe, channels = parsed
-                if universe == self.universe:
-                    self.packets_total += 1
-                    self.last_source_ip = addr[0]
-                    self.last_packet_time = time.monotonic()
-                    self._on_dmx(channels)
+            now = time.monotonic()
+            if now - self._last_announce >= ANNOUNCE_INTERVAL:
+                self._announce()
+                self._last_announce = now
+            for sock in self._wait_readable(0.5):
+                try:
+                    data, addr = sock.recvfrom(2048)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return  # socket closed during stop()
+                self._handle(data, addr, self._labels[sock.fileno()])
+
+    def _wait_readable(self, timeout):
+        """Sockets with data waiting. Isolated so tests can drive the loop."""
+        try:
+            ready, _, _ = select.select(self._socks, [], [], timeout)
+            return ready
+        except (OSError, ValueError):
+            return []
+
+    def _handle(self, data, addr, label):
+        parsed = parse_packet(data)
+        if parsed is None:
+            return
+        if parsed[0] == "poll":
+            if self._is_duplicate(data, addr[0], label):
+                return
+            self.last_poll_ip = addr[0]
+            self.last_poll_time = time.monotonic()
+            self._send_poll_reply(addr)
+            return
+        _, universe, channels = parsed
+        if self._is_duplicate(data, addr[0], label):
+            return
+        self._note_universe(universe, addr[0])
+        if universe != self.universe:
+            return
+        self.packets_total += 1
+        self.last_source_ip = addr[0]
+        self.last_packet_time = time.monotonic()
+        self._on_dmx(channels)
+
+    def _is_duplicate(self, data, src, label):
+        """True when this is another copy of a datagram already handled.
+
+        A broadcast is delivered to every socket of ours that matches, so the
+        same datagram arrives once per socket. The same *socket* seeing an
+        identical payload again means a genuinely new frame, not a copy — which
+        is what keeps a console holding a static look at 44 fps from being
+        thinned out to half rate.
+        """
+        if len(self._socks) < 2:
+            return False
+        now = time.monotonic()
+        key = (src, hash(data))
+        seen_at, labels = self._recent.get(key, (0.0, None))
+        if labels is not None and now - seen_at < DEDUP_WINDOW \
+                and label not in labels:
+            labels.add(label)
+            return True
+        self._recent[key] = (now, {label})
+        if len(self._recent) > 64:
+            self._recent = {k: v for k, v in self._recent.items()
+                            if now - v[0] < DEDUP_WINDOW}
+        return False
+
+    def _note_universe(self, universe, src):
+        """Record every universe on the wire, selected or not."""
+        with self._uni_lock:
+            rec = self._universes.get(universe)
+            if rec is None:
+                rec = self._universes[universe] = {"packets": 0, "src": src,
+                                                   "last_seen": 0.0}
+            rec["packets"] += 1
+            rec["src"] = src
+            rec["last_seen"] = time.monotonic()
+
+    def get_universes(self):
+        """Snapshot of {universe: {packets, src, last_seen}} for the GUI."""
+        with self._uni_lock:
+            return {u: dict(rec) for u, rec in self._universes.items()}
+
+    # ------------------------------------------------------------- announce
 
     def _send_poll_reply(self, addr):
         reply = build_poll_reply(self._local_ip_for(addr[0]), self.universe)
         try:
-            self._sock.sendto(reply, (addr[0], ARTNET_PORT))
+            self._announce_sock.sendto(reply, (addr[0], ARTNET_PORT))
             log.debug("ArtPollReply sent to %s", addr[0])
         except OSError as e:
             log.warning("Failed to send ArtPollReply to %s: %s", addr[0], e)
+
+    def _announce(self):
+        """Broadcast an unsolicited ArtPollReply (spec: on start + periodically)."""
+        reply = build_poll_reply(self._advertise_ip, self.universe)
+        try:
+            self._announce_sock.sendto(reply, (BROADCAST_ADDR, ARTNET_PORT))
+            log.debug("ArtPollReply broadcast as %s", self._advertise_ip)
+        except OSError as e:
+            log.warning("Failed to broadcast ArtPollReply: %s", e)
+
+    def _pick_advertise_ip(self):
+        """IP to put in announce packets: the bound NIC, else the outbound one.
+
+        With no explicit bind, ask the routing table which interface reaches the
+        network — that beats guessing on a multi-NIC machine. Only fall back to
+        the enumerated list if that lookup gives nothing usable.
+        """
+        if self._bind_ip and self._bind_ip != WILDCARD:
+            return self._bind_ip
+        routed = self._local_ip_for(BROADCAST_ADDR)
+        if routed and routed != WILDCARD and not routed.startswith("169.254."):
+            return routed
+        local = list_local_ipv4()
+        if local:
+            return local[0]
+        return routed or WILDCARD
 
     @staticmethod
     def _local_ip_for(dest_ip):
@@ -162,4 +394,4 @@ class ArtNetReceiver:
             finally:
                 s.close()
         except OSError:
-            return "0.0.0.0"
+            return WILDCARD
