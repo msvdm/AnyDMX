@@ -50,7 +50,9 @@ ArtNetReceiver ──┐                       ┌── DmxOutput (USB serial)
 | `src/core/engine.py` | Universe buffer + status snapshots; wires receiver → output |
 | `src/core/ports.py` | COM port enumeration + chip ID (FTDI/CH340/CP210x/Prolific) |
 | `src/core/vnet.py` | Virtual "AnyDMX" lighting adapter: create/remove, UAC elevation |
-| `src/gui/main_window.py` | Single-window GUI, 100 ms status polling |
+| `src/gui/main_window.py` | Single-window GUI: input panel, output panel, 100 ms status polling |
+| `src/gui/title_bar.py` | The window's own title bar (the window is frameless) |
+| `src/gui/vnet_dialog.py` | Lighting-interface pop-up: create/remove the virtual adapter |
 | `src/gui/channel_view.py` | Live 512-channel grid (32×16) |
 | `src/gui/styles.py` | Color palette + QSS |
 | `src/utils/paths.py` | Portable paths (source run vs PyInstaller exe) |
@@ -85,6 +87,37 @@ from worker threads.
   Reopen this only if a fast pan/tilt visibly steps through AnyDMX but not when
   the console drives the rig directly.
 
+## Window geometry facts — measured, do not re-litigate
+
+- The desktop is smaller than the monitor. The dev machine's 4K screen at 300%
+  scaling reports **1280x720, work area 1280x680** to Qt, and every size in the
+  GUI is in those logical pixels.
+- A window larger than the work area gets shoved around by the window manager
+  while it is being placed, so `_fit_on_screen()` clamps every programmatic
+  resize to it and `_settle_on_screen()` checks where it landed one event-loop
+  pass later, once the layout has settled.
+- **The window is frameless** (`Qt.FramelessWindowHint`): a window manager's
+  title bar is outside the widget tree and no stylesheet can reach it, so the
+  bar is drawn by `src/gui/title_bar.py` instead. That means move, resize,
+  minimise, maximise and close are the app's job now:
+  - drag and resize are handed back to the platform with `startSystemMove()` /
+    `startSystemResize()`, never reimplemented with mouse arithmetic — that is
+    what keeps snapping and tiling native on X11 and Windows
+  - the resize border is the margin strip around `_body`, caught in
+    `eventFilter()`; the top edge belongs to the bar's own `mousePressEvent`
+  - there is no frame outside the window any more, so `_max_client_size()` is
+    simply the work area
+  - Muffin's rule about hiding the maximise button on a window that cannot fit
+    no longer applies — the maximise button is ours. Keep the minimum modest
+    anyway; a window that cannot shrink to the screen is still a bad window
+- **The panel row's height is a budget spent against the channel grid.** The
+  grid needs ~320 px (16 rows over `MIN_TEXT_H`) before it will label its cells,
+  and on a 680 px work area there is nothing else to take it from. That is why
+  the universes move to the bottom strip when the drawer opens, why Clear sits
+  beside the drawer button rather than under it, and why the paddings in the
+  panels are as small as they are. Adding a row to either panel takes the cell
+  labels away on that machine — check with the drawer open before adding one.
+
 ## Windows networking facts — verified by experiment, do not re-litigate
 
 - Windows **loops locally-sent broadcast back to other local sockets**, so an
@@ -113,6 +146,18 @@ from worker threads.
 
 ## Invariants — do not break
 
+- There is no Start button: the bridge arms itself on startup and re-arms on
+  every selection change. A failed bind is reported in the bottom status line,
+  never a modal — the GUI must stay usable so the user can pick another port
+- The window is two panels: everything Art-Net on the left, everything DMX on
+  the right, one dynamic sentence across the bottom. It opens at the compact
+  layout's own floor (`COMPACT_W` x `COMPACT_H`) and nothing in the panels may
+  be allowed to stretch it, which is why the status label's width policy is
+  Ignored, the discovered-universe list is scrolled, and its chips drop the
+  source address (never the LOCAL TEST marker) while the column is narrow
+- Each drawer state remembers the size it was last left at, for the session
+  only: the arrow toggles between two windows the user has already sized, and a
+  restart is back to the compact default
 - DMX output keeps streaming the last frame when Art-Net input stops
   (fixtures need continuous DMX; a paused console must not black out the rig)
 - A held frame must always be *labelled* as held. Levels nobody is sending look

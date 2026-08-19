@@ -34,15 +34,27 @@ IP, and consoles on the network can broadcast normally.
 python AnyDMX.py
 ```
 
-1. Pick the COM port of your dongle (press ⟳ after plugging it in).
-2. Leave **Network** on "All interfaces", or pick a specific IP on multi-NIC
-   machines (e.g. a dedicated lighting LAN) — that IP is what the node
+The bridge starts by itself — there is nothing to press. The window draws its
+own title bar (**DMX bridge**, with the rescan ⟳ beside the app mark on the
+left and the window buttons on the right), so it is dark on every desktop
+instead of wearing the system's. The window is the
+signal path: **INPUT** on the left, **OUTPUT** on the right, and one line along
+the bottom saying what is happening right now.
+
+1. **Input Port** — leave it on "All interfaces", or pick a specific IP on
+   multi-NIC machines (e.g. a dedicated lighting LAN). That IP is what the node
    advertises to consoles.
-3. Press **Start**. Green indicators = packets arriving + DMX streaming.
-4. The **"Art-Net seen on this PC"** strip lists every universe actually
-   arriving, with its source IP and rate. Click one to listen to it — you do
-   not have to know the universe number in advance. The spinner is still there
-   for manual override.
+2. **Output Device** — the COM port of your dongle (press ⟳ after plugging it
+   in). Leave it on "Monitor mode" to watch Art-Net with no hardware attached.
+3. **Universe** — or just click one in the list of universes actually arriving,
+   with its source and rate, so you do not have to know the number in advance.
+   It sits under the Input Port in the compact window and moves to the bottom
+   strip when the channel grid is open.
+4. Green indicators = packets arriving + DMX streaming. Changing any selection
+   re-arms the bridge immediately.
+5. **▼ DMX values** opens the 512-channel grid; closed, the window is small
+   enough to leave running beside the console. Each state keeps the size you
+   last gave it, so the arrow toggles between your two windows.
 
 The channel grid shows all 512 levels live. Traffic from `127.0.0.1` is
 labelled as a local test sender, so a simulator can never be mistaken for a
@@ -72,8 +84,9 @@ nothing, display `0.0.0.0`, and transmit not one packet. There is then nothing
 to capture, however well AnyDMX listens.
 
 So AnyDMX can create the landing spot itself: a virtual network adapter named
-**AnyDMX** holding `2.100.100.0/8` (both editable). Press **Create** in the
-Lighting interface row. It replaces the old routine of installing a loopback
+**AnyDMX** holding `2.100.100.0/8` (both editable). Press **Create Interface**
+in the INPUT panel and set it up in the pop-up; the adapter then appears in the
+Input Port list. It replaces the old routine of installing a loopback
 adapter by hand and running a separate bridge application.
 
 - **No need to run AnyDMX as administrator.** Creating and removing the
