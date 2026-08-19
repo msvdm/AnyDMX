@@ -6,20 +6,19 @@ decorations off and draw one here. That hands this widget the jobs the window
 manager used to do: dragging, double-click to maximise, the top-edge resize and
 the minimise/maximise/close buttons.
 
-Move and resize are handed straight back to the platform through
-`startSystemMove()` / `startSystemResize()` rather than reimplemented with
-mouse arithmetic, so snapping, tiling and multi-monitor behaviour stay native
-on both X11 and Windows.
+Dragging and the top-edge resize are delegated to the FramelessWindow this bar
+belongs to, so there is one rule about when the window may be moved or resized
+rather than one here and another in the window's body.
 """
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
+from src.gui.frameless import RESIZE_MARGIN
 from src.gui.styles import COLORS
 
 BAR_HEIGHT = 34
 RULE_HEIGHT = 2
-RESIZE_MARGIN = 6     # top strip of the bar that resizes instead of moving
 BUTTON_W = 34
 
 MAXIMISE = "☐"   # ballot box: an empty window outline
@@ -107,15 +106,13 @@ class TitleBar(QFrame):
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
-        handle = self._window.windowHandle()
-        if handle is None:
-            return
         # The bar is flush with the top edge, so its first few pixels have to
-        # keep working as the window's resize border.
-        if event.position().y() <= RESIZE_MARGIN and not self._window.isMaximized():
-            handle.startSystemResize(Qt.TopEdge)
-        else:
-            handle.startSystemMove()
+        # keep working as the window's resize border. begin_resize() declines
+        # when the window is maximised, and then this is a drag like any other.
+        if event.position().y() <= RESIZE_MARGIN \
+                and self._window.begin_resize(Qt.TopEdge):
+            return
+        self._window.begin_move()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:

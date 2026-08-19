@@ -47,11 +47,14 @@ ArtNetReceiver ──┐                       ┌── DmxOutput (USB serial)
 | `AnyDMX.py` | Entry point; also dispatches `--vnet-helper` elevated mode before Qt loads |
 | `src/core/artnet_receiver.py` | Multi-socket UDP listener, ArtDMX parser, universe discovery, ArtPollReply |
 | `src/core/dmx_output.py` | Serial DMX sender thread, auto-reconnect |
-| `src/core/engine.py` | Universe buffer + status snapshots; wires receiver → output |
+| `src/core/engine.py` | Universe buffer + status snapshots + `RateMeter`; wires receiver → output |
 | `src/core/ports.py` | COM port enumeration + chip ID (FTDI/CH340/CP210x/Prolific) |
 | `src/core/vnet.py` | Virtual "AnyDMX" lighting adapter: create/remove, UAC elevation |
 | `src/gui/main_window.py` | Single-window GUI: input panel, output panel, 100 ms status polling |
+| `src/gui/frameless.py` | `FramelessWindow`: move/resize/clamp — everything the decorations used to do |
 | `src/gui/title_bar.py` | The window's own title bar (the window is frameless) |
+| `src/gui/status_text.py` | Snapshot → LED, one-word state, and the bottom sentence (pure, no Qt) |
+| `src/gui/universe_bar.py` | The discovered-universe chips, as a column or a row |
 | `src/gui/vnet_dialog.py` | Lighting-interface pop-up: create/remove the virtual adapter |
 | `src/gui/channel_view.py` | Live 512-channel grid (32×16) |
 | `src/gui/styles.py` | Color palette + QSS |
@@ -80,6 +83,10 @@ from worker threads.
   `_wait_drained()` and the `MIN_FRAME_PERIOD` floor.
 - Rates shown in the GUI are averaged over `RATE_WINDOW`, not the 100 ms poll:
   3-4 frames per poll means timer jitter alone swings the figure by ±5 fps.
+  **Every** rate goes through `engine.RateMeter` for this reason — the packet
+  rate, the frame rate, and the per-universe rate on each chip. A rate computed
+  straight off the poll interval is the bug this class exists to prevent, and
+  it looks like a working feature until someone reads the number.
 - **~34 fps is a deliberate choice, not a limitation to fix.** Consoles run
   25-44 Hz; the only way past the ceiling is sending fewer channels per frame,
   which re-creates the stale-tail confusion the GUI now exists to explain — a
@@ -93,7 +100,7 @@ from worker threads.
   scaling reports **1280x720, work area 1280x680** to Qt, and every size in the
   GUI is in those logical pixels.
 - A window larger than the work area gets shoved around by the window manager
-  while it is being placed, so `_fit_on_screen()` clamps every programmatic
+  while it is being placed, so `fit_on_screen()` clamps every programmatic
   resize to it and `_settle_on_screen()` checks where it landed one event-loop
   pass later, once the layout has settled.
 - **The window is frameless** (`Qt.FramelessWindowHint`): a window manager's
@@ -103,9 +110,11 @@ from worker threads.
   - drag and resize are handed back to the platform with `startSystemMove()` /
     `startSystemResize()`, never reimplemented with mouse arithmetic — that is
     what keeps snapping and tiling native on X11 and Windows
-  - the resize border is the margin strip around `_body`, caught in
-    `eventFilter()`; the top edge belongs to the bar's own `mousePressEvent`
-  - there is no frame outside the window any more, so `_max_client_size()` is
+  - all four edges live in `FramelessWindow`: the border is the margin strip
+    around the body, caught in `eventFilter()`, and the title bar routes its
+    top-edge press through the same `begin_resize()`. There is one rule about
+    when the window may be resized, not one per file
+  - there is no frame outside the window any more, so `max_client_size()` is
     simply the work area
   - Muffin's rule about hiding the maximise button on a window that cannot fit
     no longer applies — the maximise button is ours. Keep the minimum modest
@@ -143,6 +152,14 @@ from worker threads.
   has no `/add-device` and `devcon.exe` is not shipped. Creation goes through
   SetupAPI via ctypes (`netloop.inf`, hardware ID `*MSLOOP`). Removal can use
   `pnputil /remove-device`.
+- **`ctypes.wintypes` is wrong off Windows.** It maps `DWORD`/`BOOL` onto
+  `c_ulong`/`c_long`, which are 32-bit only under Windows' LLP64 model — on an
+  LP64 host they widen to 64 bits and every SetupAPI struct is laid out wrong
+  (`_SP_DEVINFO_DATA` came out 48 bytes instead of 32, and the layout test that
+  caught it was simply left failing). `vnet.py` therefore spells the scalars as
+  fixed widths (`c_uint32`, `c_uint16`) and the structs are correct on any host.
+  Do not "simplify" them back to `wintypes`; handle and string types are
+  pointer-sized everywhere and are the only ones that still come from there.
 
 ## Invariants — do not break
 
