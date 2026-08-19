@@ -176,6 +176,8 @@ class ArtNetReceiver:
         self._uni_lock = threading.Lock()
         # Stats (read by engine/GUI; single-writer, atomic assignments only)
         self.packets_total = 0
+        self.last_frame_len = 0  # channels in the last frame — short frames
+                                 # leave everything above this untouched
         self.last_source_ip = None
         self.last_packet_time = 0.0
         self.last_poll_ip = None
@@ -303,6 +305,7 @@ class ArtNetReceiver:
         if universe != self.universe:
             return
         self.packets_total += 1
+        self.last_frame_len = len(channels)
         self.last_source_ip = addr[0]
         self.last_packet_time = time.monotonic()
         self._on_dmx(channels)

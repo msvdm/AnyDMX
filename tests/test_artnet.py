@@ -281,3 +281,22 @@ def test_get_universes_returns_a_snapshot_not_live_state():
     snapshot = r.get_universes()
     snapshot[0]["packets"] = 999
     assert r.get_universes()[0]["packets"] == 1
+
+
+# ------------------------------------------------------------ frame length
+
+def test_frame_length_follows_the_artdmx_length_field():
+    r, socks = _make_receiver(universe=0)
+    label = r._labels[socks[0].fileno()]
+    r._handle(build_artdmx(0, [7] * 512, sequence=1), ("10.1.1.1", 6454), label)
+    assert r.last_frame_len == 512
+    r._handle(build_artdmx(0, [7] * 128, sequence=2), ("10.1.1.1", 6454), label)
+    assert r.last_frame_len == 128   # the GUI can now say "128 ch", not "512"
+
+
+def test_frame_length_ignores_other_universes():
+    r, socks = _make_receiver(universe=0)
+    label = r._labels[socks[0].fileno()]
+    r._handle(build_artdmx(0, [7] * 512, sequence=1), ("10.1.1.1", 6454), label)
+    r._handle(build_artdmx(5, [7] * 24, sequence=2), ("10.1.1.1", 6454), label)
+    assert r.last_frame_len == 512

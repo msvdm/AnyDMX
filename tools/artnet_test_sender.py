@@ -3,6 +3,7 @@
 Usage (from the project root):
     python tools/artnet_test_sender.py                 # animate to 127.0.0.1
     python tools/artnet_test_sender.py --ip 192.168.1.50 --universe 1
+    python tools/artnet_test_sender.py --channels 128    # short frame
 """
 
 import argparse
@@ -34,7 +35,11 @@ def main():
     parser.add_argument("--ip", default="127.0.0.1")
     parser.add_argument("--universe", type=int, default=0)
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--channels", type=int, default=512,
+                        help="channels per frame (1-512); a short frame leaves "
+                             "everything above it untouched, like a real console")
     args = parser.parse_args()
+    args.channels = max(1, min(512, args.channels))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # Loud on purpose: a simulator mistaken for a real console once made a
@@ -45,7 +50,8 @@ def main():
     print("  output path works. It says nothing about your console.")
     print("=" * 68)
     print(f"Sending animated ArtDMX to {args.ip}:{ARTNET_PORT} "
-          f"universe {args.universe} at {args.fps} fps — Ctrl+C to stop")
+          f"universe {args.universe} at {args.fps} fps, "
+          f"{args.channels} channels per frame — Ctrl+C to stop")
     sequence = 0
     t0 = time.monotonic()
     try:
@@ -53,7 +59,7 @@ def main():
             t = time.monotonic() - t0
             channels = [
                 int(127.5 * (1 + math.sin(t * 2.0 + ch * 0.12)))
-                for ch in range(512)
+                for ch in range(args.channels)
             ]
             sequence = (sequence % 255) + 1
             sock.sendto(build_artdmx(args.universe, channels, sequence),

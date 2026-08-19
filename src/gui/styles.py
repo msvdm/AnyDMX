@@ -10,6 +10,7 @@ COLORS = {
     "ok": "#39c26d",
     "err": "#e5534b",
     "warn": "#d4a72c",
+    "stale": "#4a5162",  # levels nothing is transmitting any more
 }
 
 APP_QSS = f"""

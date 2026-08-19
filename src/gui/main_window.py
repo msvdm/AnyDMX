@@ -159,10 +159,17 @@ class MainWindow(QMainWindow):
         self.channel_view = ChannelView()
         root.addWidget(self.channel_view, stretch=1)
 
-        hint = QLabel("512 channels — hover a cell for its value")
+        legend = QHBoxLayout()
+        hint = QLabel("512 channels — hover a cell for its value; "
+                      "grey = held or not in the current frame")
         hint.setObjectName("dim")
-        hint.setAlignment(Qt.AlignRight)
-        root.addWidget(hint)
+        legend.addWidget(hint)
+        legend.addStretch()
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.setToolTip("Zero the universe buffer — sends all-zero DMX")
+        self.clear_btn.clicked.connect(self._clear_buffer)
+        legend.addWidget(self.clear_btn)
+        root.addLayout(legend)
 
         self.setCentralWidget(central)
         self.resize(760, 480)
@@ -307,6 +314,17 @@ class MainWindow(QMainWindow):
     def _universe_changed(self, value):
         self.engine.set_universe(value)
 
+    def _clear_buffer(self):
+        """Manual escape hatch for stale levels a short frame never overwrites."""
+        answer = QMessageBox.question(
+            self, "Clear the universe buffer",
+            "This sets all 512 channels to zero and sends that out.\n"
+            "If a rig is connected, it goes dark until the console sends again.\n\n"
+            "Clear now?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer == QMessageBox.Yes:
+            self.engine.blackout()
+
     def _toggle_engine(self, checked):
         if checked:
             port = self.port_combo.currentData()
@@ -401,7 +419,16 @@ class MainWindow(QMainWindow):
             origin = (f"{source} — LOCAL TEST SENDER, not your console"
                       if source == LOOPBACK else source)
             self.artnet_label.setText(
-                f"Art-Net: receiving from {origin} ({st['artnet_pps']:.0f} pkt/s)")
+                f"Art-Net: receiving from {origin} "
+                f"({st['artnet_pps']:.0f} pkt/s, {st['frame_len']} ch)")
+        elif st["holding"]:
+            # Not a fault — the last frame is held on purpose so the rig stays
+            # lit. Saying so is the whole point: silence looks identical to it.
+            self._set_led(self.artnet_led, "warn")
+            source = st["artnet_source"] or "the last source"
+            self.artnet_label.setText(
+                f"Art-Net: nothing arriving — holding last frame from {source} "
+                f"({st['held_since']:.0f}s ago)")
         elif others:
             # The console is talking, just not on the universe we are listening to.
             self._set_led(self.artnet_led, "warn")
@@ -429,7 +456,10 @@ class MainWindow(QMainWindow):
             self._set_led(self.dmx_led, "err")
             err = st["dmx_error"] or "port unavailable"
             self.dmx_label.setText(f"DMX out: reconnecting — {err}")
-        self.channel_view.set_channels(self.engine.get_channels())
+        self.channel_view.set_channels(
+            self.engine.get_channels(),
+            live_len=st["frame_len"] if st["artnet_active"] else 0,
+            holding=st["holding"])
 
     def closeEvent(self, event):
         self._save_current_settings()

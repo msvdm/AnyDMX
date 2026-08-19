@@ -35,7 +35,7 @@ ArtNetReceiver ──┐                       ┌── DmxOutput (USB serial)
 ## Tech Stack
 
 - **Python + PySide6** — GUI
-- **pyserial** — DMX output (Open DMX technique: 250000 baud 8N2, break + start code + 512 bytes @ ~40 fps)
+- **pyserial** — DMX output (Open DMX technique: 250000 baud 8N2, break + start code + 512 bytes @ ~34 fps)
 - **stdlib socket** — Art-Net UDP (port 6454), no external protocol library
 - **ctypes + PowerShell** — virtual network adapter. Nothing bundled: the
   loopback driver is in-box and SetupAPI is called directly.
@@ -63,6 +63,21 @@ ArtNetReceiver ──┐                       ┌── DmxOutput (USB serial)
 DmxOutput (serial send loop). Cross-thread data goes ONLY through the
 lock-guarded buffer or single-writer atomic stat attributes. No Qt signals
 from worker threads.
+
+## DMX timing facts — arithmetic, do not re-litigate
+
+- A full frame is 513 slots × 11 bits at 250000 baud = **22.6 ms of wire time**.
+  With break + MAB the physical ceiling is ~42 fps, so a 40 fps target leaves
+  only 1.3 ms of slack — not enough, and `DmxOutput` clamps to ~34 fps.
+- `flush()` empties the *driver* buffer, not the USB chip's FIFO. An FT232R
+  holds 128 bytes = 5.6 ms of DMX after `flush()` returns.
+- `break_condition` (SetCommBreak) acts on the UART **immediately**, out of band
+  from queued data. Assert it while the previous frame is still draining and its
+  tail is corrupted — the symptom is every fixture on the line twitching at once,
+  intermittently, while the channel grid sits perfectly still. Hence
+  `_wait_drained()` and the `MIN_FRAME_PERIOD` floor.
+- Rates shown in the GUI are averaged over `RATE_WINDOW`, not the 100 ms poll:
+  3-4 frames per poll means timer jitter alone swings the figure by ±5 fps.
 
 ## Windows networking facts — verified by experiment, do not re-litigate
 
@@ -94,6 +109,12 @@ from worker threads.
 
 - DMX output keeps streaming the last frame when Art-Net input stops
   (fixtures need continuous DMX; a paused console must not black out the rig)
+- A held frame must always be *labelled* as held. Levels nobody is sending look
+  identical to live ones otherwise, and that reads as a bug every time. Same for
+  a short ArtDMX frame: channels above its length keep the previous console's
+  values (spec-correct), so the GUI draws them muted rather than clearing them
+- The buffer is cleared only by deliberate user action — the Clear button or a
+  universe change. Never automatically on source change or frame length
 - `DmxOutput` reconnect loop never gives up while running
 - GUI never blocks: no serial/socket calls on the main thread except via engine
   snapshots. `vnet` shells out to PowerShell, so it is called **only** on
@@ -137,9 +158,13 @@ python tools/artnet_test_sender.py      # feed test pattern to localhost
 
 PyInstaller build: deferred until after POC hardware verification.
 
-## Still unverified
+## Verified on real hardware
 
-The adapter creation path in `src/core/vnet.py` has never run against real
-Windows — no adapter has been created yet. Until that is done, and dot2 is
-confirmed to pick it up and transmit, treat the dot2 half of the chain as
-unproven. The Art-Net capture and DMX output halves are both verified working.
+The whole chain works end to end: `vnet.py` creates the adapter on real
+Windows, dot2 picks it up and transmits, Art-Net is captured, and DMX drives
+real fixtures. The frame-timing fix above was confirmed by the symptom it was
+built for disappearing — fixtures no longer twitch in unison, and the cadence
+holds steady at 33-35 fps.
+
+Still unproven: Onyx as a source (it transmits, but its own patch/interface
+setup has not been worked through), and the PyInstaller build.

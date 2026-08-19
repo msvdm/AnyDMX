@@ -15,6 +15,10 @@ from src.utils.logger import get_logger
 log = get_logger(__name__)
 
 ARTNET_ACTIVE_TIMEOUT = 2.0  # seconds without a packet before "no signal"
+# The GUI polls every 100 ms, which is far too short a window to measure a
+# ~35 Hz stream: 3 or 4 frames land per poll, so ordinary timer jitter alone
+# swings the answer by ±5 fps and makes a steady output look unstable.
+RATE_WINDOW = 0.5            # seconds of history behind each rate figure
 POLL_SEEN_TIMEOUT = 8.0      # seconds a console's ArtPoll counts as "discovered us"
 
 
@@ -29,6 +33,8 @@ class Engine:
         self._last_poll_time = time.monotonic()
         self._last_packets = 0
         self._last_frames = 0
+        self._pps = 0.0
+        self._fps = 0.0
 
     def start(self, com_port, universe, fps=40, bind_ip=""):
         """Start bridging. Empty com_port = monitor mode (Art-Net in only).
@@ -39,6 +45,7 @@ class Engine:
                                         bind_ip=bind_ip or "0.0.0.0")
         self._output = DmxOutput(com_port, self.get_channels, fps=fps) \
             if com_port else None
+        self._reset_rates()
         self._receiver.start()  # raises OSError if port 6454 is taken
         if self._output:
             self._output.start()
@@ -54,11 +61,28 @@ class Engine:
             self._output.stop()
             self._output = None
         self.running = False
+        self._reset_rates()
         log.info("Engine stopped")
 
+    def _reset_rates(self):
+        """Counters restart with each receiver/output, so the window must too."""
+        self._last_poll_time = time.monotonic()
+        self._last_packets = 0
+        self._last_frames = 0
+        self._pps = 0.0
+        self._fps = 0.0
+
     def set_universe(self, universe):
-        if self._receiver:
+        """Switch the listened-to universe, dropping what the old one left.
+
+        Levels captured for universe A must never masquerade as universe B —
+        with nothing sending on the new universe the grid would otherwise show
+        the old one's values indefinitely. Switching is a deliberate user act,
+        so clearing here does not violate the hold-last-frame invariant.
+        """
+        if self._receiver and self._receiver.universe != universe:
             self._receiver.universe = universe
+            self.blackout()
 
     def _on_dmx(self, channels):
         n = min(len(channels), DMX_CHANNELS)
@@ -76,20 +100,30 @@ class Engine:
     def get_status(self):
         """Snapshot for the GUI. Rates are computed between successive calls."""
         now = time.monotonic()
-        dt = max(now - self._last_poll_time, 1e-6)
+        dt = now - self._last_poll_time
         packets = self._receiver.packets_total if self._receiver else 0
         frames = self._output.frames_total if self._output else 0
-        pps = max(0.0, (packets - self._last_packets) / dt)
-        fps = max(0.0, (frames - self._last_frames) / dt)
-        self._last_poll_time = now
-        self._last_packets = packets
-        self._last_frames = frames
+        if dt >= RATE_WINDOW:
+            self._pps = max(0.0, (packets - self._last_packets) / dt)
+            self._fps = max(0.0, (frames - self._last_frames) / dt)
+            self._last_poll_time = now
+            self._last_packets = packets
+            self._last_frames = frames
+        pps, fps = self._pps, self._fps
 
         artnet_active = bool(
             self._receiver
             and self._receiver.last_packet_time
             and (now - self._receiver.last_packet_time) < ARTNET_ACTIVE_TIMEOUT
         )
+        # Held = the buffer still carries levels but nothing is sending them any
+        # more. The GUI must be able to say so: an unlabelled frozen frame looks
+        # exactly like a live one, and that is a mystery every time.
+        with self._lock:
+            has_levels = any(self._buffer)
+        held_since = (now - self._receiver.last_packet_time
+                      if self._receiver and self._receiver.last_packet_time
+                      else 0.0)
         poller_ip = None
         if (self._receiver and self._receiver.last_poll_time
                 and (now - self._receiver.last_poll_time) < POLL_SEEN_TIMEOUT):
@@ -97,6 +131,9 @@ class Engine:
         return {
             "running": self.running,
             "artnet_active": artnet_active,
+            "holding": bool(self.running and not artnet_active and has_levels),
+            "held_since": held_since,
+            "frame_len": self._receiver.last_frame_len if self._receiver else 0,
             "artnet_source": self._receiver.last_source_ip if self._receiver else None,
             "universes": self._receiver.get_universes() if self._receiver else {},
             "poller_ip": poller_ip,
