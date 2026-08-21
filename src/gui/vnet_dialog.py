@@ -11,8 +11,15 @@ address field; that text now lives in the README, where it can be read once
 rather than stared past every time. The labels are the same nouns Windows
 uses, and the layout is the explanation.
 
-Every adapter operation shells out — to PowerShell for the queries, to a
-short-lived elevated helper for create/remove — so this dialog is only ever
+Administrator rights are never demanded up front. Opening this window asks
+for nothing, and how AnyDMX was launched changes nothing about what can be
+done here: every button that changes something raises the Windows permission
+prompt at the moment it is pressed, through a short-lived elevated helper,
+and does nothing else if it is declined. Started elevated, the prompts do not
+appear and the window says nothing about rights at all.
+
+Every adapter operation shells out — to PowerShell for the queries, to the
+elevated helper for the changes — so this dialog is only ever
 opened on demand. Nothing here runs from the main window's 100 ms poll, and
 the receiver and output threads are untouched while it works, so DMX keeps
 streaming the whole time.
@@ -165,7 +172,9 @@ class InterfaceDialog(QDialog):
         self._adapters = []
         self._selected = None
         self._busy = False
-        self._can_edit = vnet.is_admin()
+        # Not a permission gate any more, only a question of whether a
+        # Windows prompt will appear when a change is applied.
+        self._elevated = vnet.is_admin()
         self._build_ui()
         # Paint first, query after. The enumeration takes over a second, and
         # doing it in __init__ means the dialog does not appear until it is
@@ -198,10 +207,6 @@ class InterfaceDialog(QDialog):
         title.setObjectName("sectionIn")
         row.addWidget(title)
         row.addStretch()
-        self.mode_label = QLabel(
-            "" if self._can_edit else "read-only — not running as administrator")
-        self.mode_label.setObjectName("caption")
-        row.addWidget(self.mode_label)
         rescan = QPushButton("⟳")
         rescan.setObjectName("refresh")
         rescan.setFixedSize(28, 24)
@@ -293,12 +298,23 @@ class InterfaceDialog(QDialog):
         buttons.setSpacing(8)
         self.apply_btn = QPushButton("Apply")
         self.apply_btn.setObjectName("primary")
+        self.apply_btn.setToolTip(self._permission_hint(
+            "Change this interface."))
         self.apply_btn.clicked.connect(self._apply)
         buttons.addWidget(self.apply_btn)
         self.toggle_btn = QPushButton("Disable")
         self.toggle_btn.clicked.connect(self._toggle_enabled)
         buttons.addWidget(self.toggle_btn)
-        buttons.addStretch()
+        buttons.addSpacing(8)
+        # Whatever is limiting the editor gets said here, beside the controls
+        # it limits, and only while it is true. A notice in the header reads
+        # as a verdict on the whole window instead. Ignored width so the
+        # sentence can never widen the dialog.
+        self.editor_note = QLabel("")
+        self.editor_note.setObjectName("caption")
+        self.editor_note.setSizePolicy(QSizePolicy.Ignored,
+                                       QSizePolicy.Preferred)
+        buttons.addWidget(self.editor_note, 1)
         self.revert_btn = QPushButton("Revert")
         self.revert_btn.clicked.connect(lambda: self._fill_editor(self._selected))
         buttons.addWidget(self.revert_btn)
@@ -343,10 +359,14 @@ class InterfaceDialog(QDialog):
         row.addSpacing(8)
         self.create_btn = QPushButton("Create")
         self.create_btn.setObjectName("primary")
+        self.create_btn.setToolTip(self._permission_hint(
+            "Add the virtual AnyDMX adapter."))
         self.create_btn.clicked.connect(self._create)
         row.addWidget(self.create_btn)
         self.remove_btn = QPushButton("Remove")
         self.remove_btn.setObjectName("danger")
+        self.remove_btn.setToolTip(self._permission_hint(
+            "Delete the virtual AnyDMX adapter."))
         self.remove_btn.clicked.connect(self._remove)
         row.addWidget(self.remove_btn)
         row.addStretch()
@@ -365,6 +385,19 @@ class InterfaceDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         row.addWidget(close_btn)
         return row
+
+    def _permission_hint(self, what):
+        """A button's tooltip, with the Windows prompt named when there is one.
+
+        Elevated, the second sentence would be a lie and is left off — the
+        rule for this window is that it says nothing about rights when there
+        is nothing to say.
+        """
+        if self._elevated:
+            return what
+        return (f"{what}\n"
+                "Windows will ask for permission for this one step; "
+                "AnyDMX does not need to be restarted.")
 
     @staticmethod
     def _caption(text):
@@ -425,7 +458,7 @@ class InterfaceDialog(QDialog):
         self._fill_editor(adapter)
 
     def _fill_editor(self, adapter):
-        editable = bool(adapter) and self._can_edit
+        editable = bool(adapter)
         if not adapter:
             for widget in (self.name_edit, self.ip_edit, self.gw_edit):
                 widget.setText("")
@@ -460,7 +493,26 @@ class InterfaceDialog(QDialog):
         """Static exposes the address fields; automatic greys them out."""
         static = self.mode_combo.currentIndex() == 1
         for widget in (self.ip_edit, self.prefix_spin, self.gw_edit):
-            widget.setEnabled(static and bool(self._selected) and self._can_edit)
+            widget.setEnabled(static and bool(self._selected))
+        self._explain_greyed()
+
+    def _explain_greyed(self):
+        """Why the address fields are grey — now the only reason left.
+
+        A greyed field with no reason beside it reads as a broken window.
+        Windows greys the same three in its own dialog until you pick Manual;
+        the difference is that it says so.
+        """
+        if self._selected and self.mode_combo.currentIndex() == 0:
+            self.editor_note.setText(
+                "address comes from DHCP — set Addressing to Static to type one")
+            self.editor_note.setToolTip(
+                "This interface asks the network for its address, so the "
+                "fields below show what it was given.\nSwitching to Static "
+                "hands it over to you — Art-Net 2.x does that in one click.")
+        else:
+            self.editor_note.setText("")
+            self.editor_note.setToolTip("")
 
     def _apply_preset(self):
         self.mode_combo.setCurrentIndex(1)
@@ -506,7 +558,7 @@ class InterfaceDialog(QDialog):
             return
         if not self._confirm(adapter, ops):
             return
-        self._run(lambda: vnet.apply_adapter(adapter["index"],
+        self._run(lambda: vnet.request_apply(adapter["index"],
                                              adapter["name"], ops),
                   f"applying to {adapter['name']}…",
                   done=lambda: self._applied(adapter, ops))
@@ -519,7 +571,7 @@ class InterfaceDialog(QDialog):
         ops = [{"op": "enable" if turning_on else "disable"}]
         if not self._confirm(adapter, ops):
             return
-        self._run(lambda: vnet.apply_adapter(adapter["index"],
+        self._run(lambda: vnet.request_apply(adapter["index"],
                                              adapter["name"], ops),
                   f"{'enabling' if turning_on else 'disabling'} "
                   f"{adapter['name']}…",

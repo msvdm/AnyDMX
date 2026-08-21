@@ -160,7 +160,8 @@ class MainWindow(FramelessWindow):
         self.vnet_btn.setToolTip(
             "Set up this PC's network interfaces, and create the virtual\n"
             "2.x.x.x adapter for consoles that pick their own Art-Net\n"
-            "interface (dot2). Editing an interface needs administrator rights.")
+            "interface (dot2). Windows asks for permission when you\n"
+            "change an interface — AnyDMX need not be started as admin.")
         self.vnet_btn.clicked.connect(self._open_interface_dialog)
         box.addWidget(self.vnet_btn)
         box.addSpacing(4)
@@ -408,9 +409,17 @@ class MainWindow(FramelessWindow):
     # --------------------------------------------------- lighting interface
 
     def _open_interface_dialog(self):
-        """Interface Setup: say what is possible, then show the pop-up."""
-        if not vnet.is_admin():
-            self._note_limited_setup()
+        """Interface Setup: just open it. The dialog reports its own limits.
+
+        There used to be a message box here explaining that an unelevated
+        AnyDMX could not edit interfaces. It fired every time the button was
+        pressed, and its advice — restart as administrator — is no longer
+        even true: every change in that window now raises its own permission
+        prompt when it is applied.
+        """
+        # The one fact a bug report about this window always needs, and the
+        # one the user cannot check for themselves.
+        log.info("Interface setup opened (administrator=%s)", vnet.is_admin())
         dialog = InterfaceDialog(self.settings, self)
         dialog.exec()
         self._refresh_nics()
@@ -430,25 +439,6 @@ class MainWindow(FramelessWindow):
         if index >= 0:
             with QSignalBlocker(self.nic_combo):
                 self.nic_combo.setCurrentIndex(index)
-
-    def _note_limited_setup(self):
-        """Not elevated: the editor is read-only, but the AnyDMX adapter is not.
-
-        Creating and removing the adapter has always worked unelevated through
-        the short-lived helper, and it must keep working — needing an elevated
-        launch for the one feature the app exists for would be a regression.
-        """
-        box = QMessageBox(self)
-        box.setWindowTitle("AnyDMX")
-        box.setIcon(QMessageBox.Information)
-        box.setText("AnyDMX is not running as administrator.")
-        box.setInformativeText(
-            "Interface settings will be read-only — restart AnyDMX as "
-            "administrator to change them. Creating and removing the AnyDMX "
-            "adapter still works: Windows asks for permission at that moment, "
-            "and only for that one step.")
-        box.setStandardButtons(QMessageBox.Ok)
-        box.exec()
 
     # ------------------------------------------------------------- engine
 

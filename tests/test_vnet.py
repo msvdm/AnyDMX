@@ -706,15 +706,98 @@ def test_apply_runs_the_whole_batch_in_order(monkeypatch):
     assert ran[2] == ("static", 9, "2.100.100.5", 8, "")
 
 
-def test_the_elevated_helper_still_only_knows_create_and_remove(tmp_path,
-                                                               monkeypatch):
-    """Interface editing requires admin in the GUI, so it never travels
-    through the untrusted request file. Nothing new crosses that boundary."""
-    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+# ------------------------------------ the elevated helper's three actions
+
+def _helper(tmp_path, request):
+    """Run helper_main over one request file and give back (code, result)."""
     path = tmp_path / "req.json"
-    path.write_text(json.dumps({"action": "apply", "index": 9,
-                                "ops": [{"op": "disable"}]}), encoding="utf-8")
-    assert vnet.helper_main([vnet.HELPER_FLAG, str(path)]) == 1
-    result = json.loads(path.read_text(encoding="utf-8"))
-    assert result["ok"] is False
+    path.write_text(json.dumps(request), encoding="utf-8")
+    code = vnet.helper_main([vnet.HELPER_FLAG, str(path)])
+    return code, json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_the_elevated_helper_knows_only_create_remove_and_apply(tmp_path,
+                                                                monkeypatch):
+    """The request file is writable by the unelevated user, so the set of
+    things it can ask for is the security boundary. Three, and no more."""
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    code, result = _helper(tmp_path, {"action": "configure", "name": "AnyDMX"})
+    assert code == 1 and result["ok"] is False
     assert "Unknown action" in result["error"]
+
+
+def test_the_helper_applies_a_valid_change(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(vnet, "set_static_ip",
+                        lambda i, ip, p, g: ran.append((i, ip, p, g)))
+    _stub_live(monkeypatch)
+    code, result = _helper(tmp_path, {
+        "action": "apply", "name": "BNR Inside", "index": 9,
+        "ops": [{"op": "static", "ip": "2.100.100.5", "prefix": 8,
+                 "gateway": "2.0.0.1"}]})
+    assert code == 0 and result["ok"] is True
+    assert ran == [(9, "2.100.100.5", 8, "2.0.0.1")]
+
+
+def test_the_helper_revalidates_an_apply_it_is_handed(tmp_path, monkeypatch):
+    """Whatever the unelevated side checked, this side checks again.
+
+    The file can be rewritten between the two, so every one of these has to
+    be refused by the elevated process on its own account.
+    """
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(vnet, "set_static_ip",
+                        lambda *a: pytest.fail("a bad request was applied"))
+    monkeypatch.setattr(vnet, "set_adapter_enabled",
+                        lambda *a: pytest.fail("a bad request was applied"))
+    _stub_live(monkeypatch)
+    bad = [
+        # An adapter that is not the one the request claims it is.
+        {"action": "apply", "name": "Lighting", "index": 9,
+         "ops": [{"op": "disable"}]},
+        {"action": "apply", "name": "BNR Inside", "index": "9; shutdown",
+         "ops": [{"op": "disable"}]},
+        {"action": "apply", "name": "BNR Inside", "index": 9,
+         "ops": [{"op": "static", "ip": "not-an-ip", "prefix": 8}]},
+        {"action": "apply", "name": "BNR Inside", "index": 9,
+         "ops": [{"op": "static", "ip": "2.0.0.1", "prefix": 99}]},
+        {"action": "apply", "name": "BNR Inside", "index": 9,
+         "ops": [{"op": "rename", "name": "x'; Remove-NetAdapter"}]},
+        {"action": "apply", "name": "BNR Inside", "index": 9,
+         "ops": [{"op": "reboot"}]},
+        {"action": "apply", "name": "BNR Inside", "index": 9, "ops": []},
+        {"action": "apply", "name": "BNR Inside", "index": 9,
+         "ops": [{"op": "enable"}, {"op": "disable"}]},
+    ]
+    for request in bad:
+        code, result = _helper(tmp_path, request)
+        assert code == 1 and result["ok"] is False, request
+        assert result["error"]
+
+
+def test_request_apply_elevates_only_when_it_has_to(monkeypatch):
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(vnet, "_run_elevated",
+                        lambda r: pytest.fail("elevated as administrator"))
+    monkeypatch.setattr(vnet, "set_dhcp", lambda i: None)
+    _stub_live(monkeypatch)
+    vnet.request_apply(9, "BNR Inside", [{"op": "dhcp"}])
+
+    sent = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: False)
+    monkeypatch.setattr(vnet, "_run_elevated", lambda r: sent.append(r))
+    vnet.request_apply(9, "BNR Inside", [{"op": "dhcp"}])
+    assert sent == [{"action": "apply", "name": "BNR Inside", "index": 9,
+                     "ops": [{"op": "dhcp"}]}]
+
+
+def test_request_apply_refuses_a_typo_before_prompting(monkeypatch):
+    """A permission prompt raised over a request that cannot succeed is a
+    prompt the user learns to click through."""
+    monkeypatch.setattr(vnet, "is_admin", lambda: False)
+    monkeypatch.setattr(vnet, "_run_elevated",
+                        lambda r: pytest.fail("prompted over a bad request"))
+    with pytest.raises(VNetError, match="not a valid IPv4"):
+        vnet.request_apply(9, "BNR Inside",
+                           [{"op": "static", "ip": "2.100.100", "prefix": 8}])

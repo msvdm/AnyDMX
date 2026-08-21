@@ -717,6 +717,30 @@ def request_remove(instance_id=None, name=ADAPTER_NAME):
                           "instance_id": instance_id or ""})
 
 
+def request_apply(index, expect_name, ops):
+    """Change one interface, asking Windows for elevation only if needed.
+
+    This used to be the one thing the app could not do without being started
+    as administrator, and the editor simply went read-only. That was the
+    wrong trade: pinning a static address on a real NIC is the setup step a
+    lighting network needs most often, and sending the user away to relaunch
+    the app — or to the Windows dialog this window exists to replace — to do
+    it is the workflow this project set out to remove.
+
+    The ops are validated here, in the unelevated process, so a typo is
+    refused before a permission prompt is raised over it. They are validated
+    again on the other side, because the request file between the two is
+    writable by the unelevated user and is never trusted.
+    """
+    ops = _validate_ops(ops)
+    index = _validate_index(index)
+    expect_name = _validate_name(expect_name)
+    if is_admin():
+        return apply_adapter(index, expect_name, ops)
+    return _run_elevated({"action": "apply", "name": expect_name,
+                          "index": index, "ops": ops})
+
+
 def _helper_target(request_path):
     """(executable, parameters) to relaunch this app in helper mode."""
     quoted = f'"{request_path}"'
@@ -803,6 +827,12 @@ def helper_main(argv):
                                    request.get("prefix", DEFAULT_PREFIX))
         elif action == "remove":
             state = remove_adapter(request.get("instance_id") or None, name)
+        elif action == "apply":
+            # apply_adapter re-validates the index and every op, and refuses
+            # to touch an interface whose live name is not the one the
+            # request claims. Nothing here is taken on trust.
+            state = apply_adapter(request.get("index"), name,
+                                  request.get("ops"))
         else:
             raise VNetError(f"Unknown action {action!r}")
         result = {"ok": True, "state": state}

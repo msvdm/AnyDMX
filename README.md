@@ -138,11 +138,12 @@ static, `/8`, no gateway, and the lowest free address in the `2.100.100.x`
 range — which is exactly what an auto-picking console needs, without having to
 remember why.
 
-Two deliberate limits:
+Two things worth knowing:
 
-- Editing an adapter needs administrator rights. If AnyDMX is not running
-  elevated the editor is read-only and says so. Restart it as administrator to
-  make changes.
+- Changing an adapter needs administrator rights, but AnyDMX does not have to
+  be *started* as administrator. Press Apply and Windows asks for permission
+  for that one step; approve it and the change lands, decline it and nothing
+  happens.
 - Anything that could take the machine off the network — disabling an adapter,
   re-addressing the one carrying your internet or the one AnyDMX is listening
   on — asks first, with Cancel as the default, and warns louder over a remote
@@ -167,7 +168,7 @@ list, and in the console's interface list.
   removing the adapter does need admin rights, so the button asks Windows for
   permission and does that one step in a short-lived elevated helper. Approve
   it and you are done; decline and nothing changes. Capturing Art-Net and
-  sending DMX never need elevation — only *editing* an existing adapter does.
+  sending DMX never need elevation at all.
 - The adapter **persists** across runs. It is infrastructure, not session
   state. Press **Remove** to delete it.
 - It uses Windows' own in-box loopback driver (`netloop.inf`, hardware ID

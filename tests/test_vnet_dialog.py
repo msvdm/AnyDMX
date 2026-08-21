@@ -64,6 +64,8 @@ def no_powershell(monkeypatch):
     monkeypatch.setattr(vnet, "artnet_range_addresses", lambda: [])
     monkeypatch.setattr(vnet, "apply_adapter",
                         lambda i, n, ops: pytest.fail("apply_adapter escaped"))
+    monkeypatch.setattr(vnet, "request_apply",
+                        lambda i, n, ops: pytest.fail("request_apply escaped"))
     monkeypatch.setattr(vnet, "request_create",
                         lambda *a: pytest.fail("request_create escaped"))
     monkeypatch.setattr(vnet, "request_remove",
@@ -152,16 +154,35 @@ def test_dhcp_greys_out_the_address_fields(qt_app):
     assert not dlg.gw_edit.isEnabled()
 
 
-def test_read_only_disables_the_editor_but_not_the_anydmx_adapter(
-        qt_app, monkeypatch):
-    """Create/Remove has always worked unelevated. It must keep working."""
+def test_an_unelevated_dialog_can_still_edit_an_interface(qt_app, monkeypatch):
+    """How AnyDMX was launched no longer decides what this window can do.
+
+    The editor used to go read-only here and send the user away to restart
+    as administrator. Every one of these controls must stay live: the prompt
+    comes at Apply, from the same helper Create and Remove have always used.
+    """
     monkeypatch.setattr(vnet, "is_admin", lambda: False)
     dlg = build(qt_app)
-    assert not dlg.name_edit.isEnabled()
-    assert not dlg.apply_btn.isEnabled()
-    assert not dlg.ip_edit.isEnabled()
-    assert dlg.create_btn.isEnabled()
-    assert "read-only" in dlg.mode_label.text()
+    target = next(b for b in dlg.rows.buttons() if b.adapter["name"] == "AnyDMX")
+    dlg._row_picked(target)
+    for widget in (dlg.name_edit, dlg.mode_combo, dlg.ip_edit, dlg.prefix_spin,
+                   dlg.gw_edit, dlg.preset_btn, dlg.apply_btn, dlg.toggle_btn,
+                   dlg.create_btn):
+        assert widget.isEnabled(), widget
+    # ...and every button that changes something warns about the prompt.
+    for button in (dlg.apply_btn, dlg.create_btn, dlg.remove_btn):
+        assert "permission" in button.toolTip(), button.text()
+
+
+def test_an_elevated_dialog_says_nothing_about_administrator_rights(
+        qt_app, monkeypatch):
+    """Running as administrator, no prompt is coming, so promise none."""
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    dlg = build(qt_app)
+    assert dlg.editor_note.text() == ""
+    assert dlg.apply_btn.isEnabled()
+    for button in (dlg.apply_btn, dlg.create_btn, dlg.remove_btn):
+        assert "permission" not in button.toolTip(), button.text()
 
 
 def test_the_artnet_preset_picks_a_free_address(qt_app):
@@ -283,3 +304,34 @@ def test_close_still_persists_the_anydmx_address(qt_app):
     dlg.done(0)
     assert settings["vnet_ip"] == "2.50.50.50"
     assert settings["vnet_prefix"] == 16
+
+
+def test_dhcp_says_why_the_address_fields_are_grey(qt_app):
+    """Greyed fields with no reason beside them read as a broken window.
+
+    An admin looking at a DHCP NIC sees exactly what an unelevated run looks
+    like — an untypable Address on every row — so the dialog has to name the
+    difference.
+    """
+    dlg = build(qt_app)
+    target = next(b for b in dlg.rows.buttons()
+                  if b.adapter["name"] == "BNR Outside")     # DHCP
+    dlg._row_picked(target)
+    assert not dlg.ip_edit.isEnabled()
+    assert "DHCP" in dlg.editor_note.text()
+    assert "Static" in dlg.editor_note.text()
+    # ...and it goes away the moment the user does what it says.
+    dlg.mode_combo.setCurrentIndex(1)
+    assert dlg.ip_edit.isEnabled()
+    assert dlg.editor_note.text() == ""
+
+
+def test_the_dhcp_hint_is_the_same_unelevated(qt_app, monkeypatch):
+    """DHCP is the only thing that greys those fields now, either way."""
+    monkeypatch.setattr(vnet, "is_admin", lambda: False)
+    dlg = build(qt_app)
+    target = next(b for b in dlg.rows.buttons()
+                  if b.adapter["name"] == "BNR Outside")     # DHCP
+    dlg._row_picked(target)
+    assert "DHCP" in dlg.editor_note.text()
+    assert "administrator" not in dlg.editor_note.text()

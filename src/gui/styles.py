@@ -125,9 +125,8 @@ QComboBox:hover, QSpinBox:hover, QLineEdit:hover {{
     border-color: {COLORS['accent_dim']};
 }}
 /* Not cosmetic. The interface editor greys out the address fields when an
-   adapter is set to DHCP, and read-only mode greys out all of them — without
-   this rule a disabled field is pixel-identical to an editable one, and the
-   whole affordance disappears. */
+   adapter is set to DHCP — without this rule a disabled field is
+   pixel-identical to an editable one, and the whole affordance disappears. */
 QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled {{
     background-color: {COLORS['bg']};
     color: {COLORS['text_dim']};

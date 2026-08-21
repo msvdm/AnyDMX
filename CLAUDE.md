@@ -218,17 +218,32 @@ from worker threads.
   GUI must be able to say "the console is sending universe 5", never just
   "no data"
 - Capturing Art-Net and driving DMX **never** require administrator rights.
-  Only creating/removing the adapter does, via a short-lived elevated helper
-- **Editing an existing adapter requires an elevated launch; creating the
-  AnyDMX one does not.** The interface editor is read-only when unelevated, but
-  Create/Remove stay live — they have always worked through the helper, and
-  making the app's one reason to exist admin-only would be a regression. This
-  is also why no new action goes through the elevated helper: `apply_adapter`
-  is only ever reached from an already-elevated process, so `helper_main` and
-  the untrusted-request-file boundary keep exactly the two actions they had
+  Every operation that does — creating the adapter, removing it, changing an
+  existing interface — goes through the short-lived elevated helper and asks
+  Windows at the moment it is applied
+- **How AnyDMX was launched must never decide what Interface Setup can do.**
+  There is no read-only mode. The editor was gated on `is_admin()` once and it
+  was the wrong trade twice over: pinning a static address on a real NIC is
+  the setup step a lighting network needs most often, and the greyed fields
+  were indistinguishable from the ones DHCP greys out, so an elevated user
+  reading "read-only" concluded the detection was broken. `request_apply()`
+  is the rule now, alongside `request_create()`/`request_remove()`: elevated,
+  act directly; unelevated, hand it to the helper. `apply_adapter()` keeps its
+  own `is_admin()` guard as the last line, not as the policy
+- **Rights are reported where they bite, never announced up front.** Opening
+  the window asks for nothing and pops nothing. Elevated, it says nothing
+  about rights at all — no prompt is coming, so promising one is a lie. The
+  only notice left in the editor's button row is DHCP's, and it names the
+  control that fixes it
+- Validate a change **before** raising the prompt, and again inside the
+  helper. A permission dialog raised over a request that cannot succeed is a
+  dialog the user learns to click through
 - `vnet` helper input is **untrusted**: the request file is writable by the
-  unelevated user, so the elevated helper re-validates the action, the address,
-  the prefix, and the adapter name before acting
+  unelevated user, so the elevated helper re-validates the action, the index,
+  every op, the address, the prefix, and the adapter name before acting — and
+  `apply_adapter` refuses outright if the interface's live name is not the one
+  the request claims. The helper knows exactly three actions; adding a fourth
+  widens the one boundary in this app that an attacker would aim at
 
 ## Never hide a simulator
 
