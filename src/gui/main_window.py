@@ -155,11 +155,12 @@ class MainWindow(FramelessWindow):
         box.addWidget(self.nic_combo)
         box.addSpacing(2)
 
-        self.vnet_btn = QPushButton("Create Interface")
+        self.vnet_btn = QPushButton("Interface Setup")
         self.vnet_btn.setObjectName("primary")
         self.vnet_btn.setToolTip(
-            "Add a virtual 2.x.x.x adapter for consoles that pick their own\n"
-            "Art-Net interface (dot2). Needs administrator rights.")
+            "Set up this PC's network interfaces, and create the virtual\n"
+            "2.x.x.x adapter for consoles that pick their own Art-Net\n"
+            "interface (dot2). Editing an interface needs administrator rights.")
         self.vnet_btn.clicked.connect(self._open_interface_dialog)
         box.addWidget(self.vnet_btn)
         box.addSpacing(4)
@@ -407,29 +408,47 @@ class MainWindow(FramelessWindow):
     # --------------------------------------------------- lighting interface
 
     def _open_interface_dialog(self):
-        """Create Interface: check for admin rights, then show the pop-up."""
-        if not vnet.is_admin() and not self._confirm_unelevated():
-            return
+        """Interface Setup: say what is possible, then show the pop-up."""
+        if not vnet.is_admin():
+            self._note_limited_setup()
         dialog = InterfaceDialog(self.settings, self)
         dialog.exec()
         self._refresh_nics()
+        # Order matters: the dialog may have re-addressed the adapter we were
+        # listening on and written the new address into bind_ip. Restoring the
+        # combo from settings has to happen after the repopulate that dropped
+        # the old address, and before the save that would otherwise overwrite
+        # bind_ip with the combo's fallback.
+        self._restore_bind_ip()
         self._save_current_settings()
         # Rebind so the receiver picks up (or lets go of) the new address.
         self._apply_engine()
 
-    def _confirm_unelevated(self):
+    def _restore_bind_ip(self):
+        wanted = self.settings.get("bind_ip", "")
+        index = self.nic_combo.findData(wanted)
+        if index >= 0:
+            with QSignalBlocker(self.nic_combo):
+                self.nic_combo.setCurrentIndex(index)
+
+    def _note_limited_setup(self):
+        """Not elevated: the editor is read-only, but the AnyDMX adapter is not.
+
+        Creating and removing the adapter has always worked unelevated through
+        the short-lived helper, and it must keep working — needing an elevated
+        launch for the one feature the app exists for would be a regression.
+        """
         box = QMessageBox(self)
         box.setWindowTitle("AnyDMX")
         box.setIcon(QMessageBox.Information)
-        box.setText("Creating a network interface needs administrator rights.")
+        box.setText("AnyDMX is not running as administrator.")
         box.setInformativeText(
-            "AnyDMX is not running elevated — capturing Art-Net and driving "
-            "DMX never need it. Windows will ask for permission at the moment "
-            "the interface is created, and only for that one step.")
-        proceed = box.addButton("Continue", QMessageBox.AcceptRole)
-        box.addButton("Cancel", QMessageBox.RejectRole)
+            "Interface settings will be read-only — restart AnyDMX as "
+            "administrator to change them. Creating and removing the AnyDMX "
+            "adapter still works: Windows asks for permission at that moment, "
+            "and only for that one step.")
+        box.setStandardButtons(QMessageBox.Ok)
         box.exec()
-        return box.clickedButton() is proceed
 
     # ------------------------------------------------------------- engine
 

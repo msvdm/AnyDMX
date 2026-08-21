@@ -62,6 +62,23 @@ def is_admin():
         return False
 
 
+SM_REMOTESESSION = 0x1000
+
+
+def is_remote_session():
+    """True when this process is running inside a remote desktop session.
+
+    Disabling or re-addressing the wrong adapter is annoying at the console
+    and unrecoverable over RDP — the connection goes with it and there is no
+    way back without physical access. The interface dialog says so before
+    touching an adapter that carries the default route.
+    """
+    try:
+        return bool(ctypes.windll.user32.GetSystemMetrics(SM_REMOTESESSION))
+    except (AttributeError, OSError):
+        return False
+
+
 # ------------------------------------------------------------- powershell
 
 def _powershell(script):
@@ -122,6 +139,92 @@ def artnet_range_addresses():
         "Select-Object IPAddress, InterfaceAlias | ConvertTo-Json -Compress")
     return [r["IPAddress"] for r in rows
             if str(r.get("IPAddress", "")).startswith(ARTNET_PREFIXES)]
+
+
+# Every adapter Windows shows the user, joined to its addressing, in one
+# round trip. Written as a plain string rather than an f-string: PowerShell
+# hashtable and scriptblock syntax is dense with braces, and doubling every
+# one of them to survive .format() would make it unreadable.
+#
+# Two details are load-bearing:
+#   - ConvertTo-Json defaults to -Depth 2, which serialises the nested address
+#     objects as type names instead of values. -Depth 4 is not optional.
+#   - the ContainsKey guard is what makes an adapter with no address come back
+#     as [] rather than [null]. @($ipv4[$i]) looks equivalent and is not.
+#
+# No -IncludeHidden: it adds eight WAN Miniport rows (SSTP, kernel debugger,
+# Network Monitor) that no lighting user has any use for.
+_LIST_SCRIPT = """
+$ipv4 = @{}
+Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
+  $i = [int]$_.ifIndex
+  if (-not $ipv4.ContainsKey($i)) { $ipv4[$i] = New-Object System.Collections.ArrayList }
+  [void]$ipv4[$i].Add([pscustomobject]@{ ip = [string]$_.IPAddress; prefix = [int]$_.PrefixLength })
+}
+$dhcp = @{}
+Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
+  $dhcp[[int]$_.ifIndex] = [string]$_.Dhcp }
+$gw = @{}
+Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | ForEach-Object {
+  if (-not $gw.ContainsKey([int]$_.ifIndex)) { $gw[[int]$_.ifIndex] = [string]$_.NextHop } }
+$cat = @{}
+Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object {
+  $cat[[int]$_.InterfaceIndex] = [string]$_.NetworkCategory }
+Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
+  $i = [int]$_.ifIndex
+  [pscustomobject]@{
+    name        = [string]$_.Name
+    description = [string]$_.InterfaceDescription
+    index       = $i
+    status      = [string]$_.Status
+    admin_up    = ($_.AdminStatus -eq 'Up')
+    physical    = (-not $_.Virtual)
+    link_speed  = [string]$_.LinkSpeed
+    mac         = [string]$_.MacAddress
+    instance_id = [string]$_.PnPDeviceID
+    addresses   = @(if ($ipv4.ContainsKey($i)) { $ipv4[$i] } else { @() })
+    dhcp        = ($dhcp[$i] -eq 'Enabled')
+    gateway     = $gw[$i]
+    category    = $cat[$i]
+  }
+} | ConvertTo-Json -Compress -Depth 4
+"""
+
+
+def list_adapters():
+    """Every adapter Windows shows the user, in one PowerShell round trip.
+
+    Returns a list of dicts:
+      name, description, link_speed, mac, instance_id, status : str
+      index      : int   InterfaceIndex — the handle every mutation targets
+      admin_up   : bool  False when administratively disabled
+      physical   : bool  not Virtual — the same rule Get-NetAdapter -Physical
+                         uses. The KM-TEST loopback the AnyDMX adapter is
+                         built on reports Virtual=False and so counts as
+                         physical here. That is correct and intended: it is a
+                         real NDIS miniport with a device node, and it must be
+                         editable alongside the real NICs. Do not "fix" this
+                         to HardwareInterface, which is False for adapters
+                         users certainly think of as real.
+      addresses  : [{"ip": str, "prefix": int}, ...] — may be empty, and may
+                   hold more than one entry
+      dhcp       : bool
+      gateway    : str | None   next hop of the IPv4 default route, if any
+      category   : str | None   Private / Public / DomainAuthenticated
+    """
+    rows = _powershell_json(_LIST_SCRIPT)
+    for row in rows:
+        row["index"] = int(row.get("index") or 0)
+        row["addresses"] = [
+            {"ip": str(a.get("ip", "")), "prefix": int(a.get("prefix") or 0)}
+            for a in (row.get("addresses") or []) if a]
+    return rows
+
+
+def _adapter_at(index):
+    """The one adapter at this interface index, or None."""
+    index = _validate_index(index)
+    return next((a for a in list_adapters() if a["index"] == index), None)
 
 
 # --------------------------------------------------------------- SetupAPI
@@ -338,6 +441,10 @@ def remove_adapter(instance_id=None, name=ADAPTER_NAME):
 
     Targets the stored instance ID so Remove can only ever delete the device
     AnyDMX created, never another adapter that happens to share the name.
+
+    instance_id is deliberately not pattern-validated: it goes to pnputil as
+    a list argv with no shell, so there is nothing to inject into. Keep it
+    that way — do not refactor this to a shell string.
     """
     name = _validate_name(name)
     if not is_admin():
@@ -384,6 +491,194 @@ def _validate_name(name):
         raise VNetError("Adapter name may only contain letters, digits, "
                         "spaces, hyphens, and underscores")
     return name
+
+
+def _validate_index(index):
+    """Interface indexes are interpolated bare, so they must be real ints."""
+    try:
+        index = int(index)
+    except (TypeError, ValueError):
+        raise VNetError(f"'{index}' is not a network interface index") from None
+    if not 1 <= index <= 0xFFFFFF:
+        raise VNetError(f"Interface index {index} is out of range")
+    return index
+
+
+# ----------------------------------------------------- interface settings
+
+# Everything below targets -InterfaceIndex rather than the adapter's name: a
+# batch that renames and re-addresses in one go would otherwise lose its own
+# target halfway through. Each function validates before it checks privilege
+# and before it shells out, so a bad value never reaches an elevated context.
+
+
+def set_static_ip(index, ip, prefix, gateway=""):
+    """Replace an adapter's IPv4 configuration with one static address.
+
+    Unlike configure_adapter(), a gateway is offered here. That difference is
+    deliberate: the AnyDMX adapter must never have one, but a user pinning a
+    static address on their real NIC loses every route off the subnet without
+    it, and this dialog exists so they do not have to go to Windows to fix
+    that.
+    """
+    _validate_ipv4(ip)
+    if not 1 <= int(prefix) <= 32:
+        raise VNetError(f"Prefix length must be 1-32, not {prefix}")
+    if gateway:
+        _validate_ipv4(gateway)
+    index = _validate_index(index)
+    if not is_admin():
+        raise VNetError("Changing an address requires administrator rights.")
+    route = f" -DefaultGateway '{_q(gateway)}'" if gateway else ""
+    _powershell(
+        f"Set-NetIPInterface -InterfaceIndex {index} -AddressFamily IPv4 "
+        "-Dhcp Disabled -ErrorAction SilentlyContinue; "
+        f"Remove-NetIPAddress -InterfaceIndex {index} -AddressFamily IPv4 "
+        "-Confirm:$false -ErrorAction SilentlyContinue; "
+        f"Remove-NetRoute -InterfaceIndex {index} -AddressFamily IPv4 "
+        "-Confirm:$false -ErrorAction SilentlyContinue; "
+        f"New-NetIPAddress -InterfaceIndex {index} -IPAddress '{_q(ip)}' "
+        f"-PrefixLength {int(prefix)}{route} -ErrorAction Stop | Out-Null")
+    log.info("Interface %s addressed %s/%s", index, ip, prefix)
+
+
+def set_dhcp(index):
+    """Hand an adapter back to DHCP, including its DNS servers.
+
+    -ResetServerAddresses is not offered as a setting and is not optional:
+    leaving hand-pinned DNS behind a switch back to automatic produces a
+    half-restored adapter that works until it doesn't.
+    """
+    index = _validate_index(index)
+    if not is_admin():
+        raise VNetError("Changing an address requires administrator rights.")
+    _powershell(
+        f"Remove-NetIPAddress -InterfaceIndex {index} -AddressFamily IPv4 "
+        "-Confirm:$false -ErrorAction SilentlyContinue; "
+        f"Remove-NetRoute -InterfaceIndex {index} -AddressFamily IPv4 "
+        "-Confirm:$false -ErrorAction SilentlyContinue; "
+        f"Set-NetIPInterface -InterfaceIndex {index} -AddressFamily IPv4 "
+        "-Dhcp Enabled -ErrorAction Stop; "
+        f"Set-DnsClientServerAddress -InterfaceIndex {index} "
+        "-ResetServerAddresses -ErrorAction SilentlyContinue")
+    log.info("Interface %s handed back to DHCP", index)
+
+
+def set_adapter_name(index, new_name):
+    """Rename an adapter by index.
+
+    Not _rename_adapter(), which is the private, PnPDeviceID-targeted,
+    retrying one used while a freshly created adapter is still enumerating.
+    """
+    new_name = _validate_name(new_name)
+    index = _validate_index(index)
+    if not is_admin():
+        raise VNetError("Renaming an interface requires administrator rights.")
+    _powershell(
+        f"Get-NetAdapter -InterfaceIndex {index} -ErrorAction Stop | "
+        f"Rename-NetAdapter -NewName '{_q(new_name)}' -Confirm:$false "
+        "-ErrorAction Stop")
+    log.info("Interface %s renamed to %s", index, new_name)
+
+
+def set_adapter_enabled(index, enabled):
+    """Enable or disable an adapter.
+
+    The verb comes from a literal table — no caller-supplied text ever
+    reaches the command line here.
+    """
+    index = _validate_index(index)
+    if not is_admin():
+        raise VNetError("Enabling or disabling an interface requires "
+                        "administrator rights.")
+    verb = "Enable-NetAdapter" if enabled else "Disable-NetAdapter"
+    _powershell(
+        f"Get-NetAdapter -InterfaceIndex {index} -ErrorAction Stop | "
+        f"{verb} -Confirm:$false -ErrorAction Stop")
+    log.info("Interface %s %s", index, "enabled" if enabled else "disabled")
+
+
+# Enable before addressing (a disabled adapter cannot be given an address),
+# and disable last, so a batch that does both still ends up where it meant to.
+_OP_ORDER = {"enable": 0, "rename": 1, "static": 2, "dhcp": 2, "disable": 3}
+
+_RUNNERS = {
+    "enable": lambda i, c: set_adapter_enabled(i, True),
+    "disable": lambda i, c: set_adapter_enabled(i, False),
+    "rename": lambda i, c: set_adapter_name(i, c["name"]),
+    "dhcp": lambda i, c: set_dhcp(i),
+    "static": lambda i, c: set_static_ip(i, c["ip"], c["prefix"], c["gateway"]),
+}
+
+
+def _validate_ops(ops):
+    """Validate a whole batch before any of it runs.
+
+    A typo in the third change must not leave the first two applied — half a
+    reconfigured adapter is worse than none, because the user cannot see
+    which half.
+    """
+    if not isinstance(ops, list) or not 1 <= len(ops) <= 6:
+        raise VNetError("A change request must carry 1-6 changes.")
+    clean = []
+    for raw in ops:
+        if not isinstance(raw, dict):
+            raise VNetError("Malformed change request.")
+        op = raw.get("op")
+        if op not in _OP_ORDER:
+            raise VNetError(f"Unknown change {op!r}")
+        if op == "rename":
+            clean.append({"op": op, "name": _validate_name(raw.get("name"))})
+        elif op == "static":
+            ip = str(raw.get("ip", ""))
+            _validate_ipv4(ip)
+            prefix = int(raw.get("prefix", 0))
+            if not 1 <= prefix <= 32:
+                raise VNetError(f"Prefix length must be 1-32, not {prefix}")
+            gateway = str(raw.get("gateway", "") or "")
+            if gateway:
+                _validate_ipv4(gateway)
+            clean.append({"op": op, "ip": ip, "prefix": prefix,
+                          "gateway": gateway})
+        else:
+            clean.append({"op": op})
+    kinds = {c["op"] for c in clean}
+    if len(clean) != len(kinds):
+        raise VNetError("A change request may not repeat a change.")
+    if {"enable", "disable"} <= kinds or {"static", "dhcp"} <= kinds:
+        raise VNetError("A change request contradicts itself.")
+    clean.sort(key=lambda c: _OP_ORDER[c["op"]])
+    return clean
+
+
+def apply_adapter(index, expect_name, ops):
+    """Apply a batch of changes to one adapter. Requires administrator rights.
+
+    expect_name is an identity check, and it is the guard that makes the rest
+    safe. Interface indexes are stable while an adapter exists but Windows
+    reuses them, and the dialog's list can be seconds old by the time someone
+    presses Apply — so confirm the adapter is still the one they were looking
+    at before touching it.
+    """
+    ops = _validate_ops(ops)
+    index = _validate_index(index)
+    expect_name = _validate_name(expect_name)
+    if not is_admin():
+        raise VNetError("Changing a network interface requires administrator "
+                        "rights.")
+    live = _adapter_at(index)
+    if live is None:
+        raise VNetError(f"Interface {index} is no longer present — nothing "
+                        "was changed.")
+    if live["name"] != expect_name:
+        raise VNetError(
+            f"Interface {index} is now '{live['name']}', not '{expect_name}' "
+            "— nothing was changed. Refresh and try again.")
+    for change in ops:
+        _RUNNERS[change["op"]](index, change)
+    log.info("Applied %s to interface %s (%s)",
+             [c["op"] for c in ops], index, expect_name)
+    return _adapter_at(index)
 
 
 # ------------------------------------------------------------- elevation

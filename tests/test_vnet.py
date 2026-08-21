@@ -404,3 +404,317 @@ def test_adapter_names_are_restricted(bad):
 def test_ordinary_adapter_names_pass():
     for good in ("AnyDMX", "Any DMX", "Any-DMX_2"):
         assert vnet._validate_name(good) == good
+
+
+# ------------------------------------------------------- adapter listing
+
+# Trimmed from a real machine: two addressed physical NICs (both carrying a
+# default route), a VirtualBox adapter that is present but has no address, the
+# AnyDMX loopback, and a Tailscale tunnel.
+LIST_PAYLOAD = json.dumps([
+    {"name": "BNR Inside", "description": "Realtek PCIe GbE Family Controller",
+     "index": 9, "status": "Up", "admin_up": True, "physical": True,
+     "link_speed": "1 Gbps", "mac": "00-E0-4C-68-24-3C",
+     "instance_id": "PCI\\VEN_10EC",
+     "addresses": [{"ip": "192.168.31.248", "prefix": 24}],
+     "dhcp": True, "gateway": "192.168.31.3", "category": "Private"},
+    {"name": "Ethernet", "description": "VirtualBox Host-Only Ethernet Adapter",
+     "index": 8, "status": "Not Present", "admin_up": False, "physical": False,
+     "link_speed": "0 bps", "mac": "0A-00-27-00-00-0A",
+     "instance_id": "ROOT\\NET\\0000", "addresses": [],
+     "dhcp": False, "gateway": None, "category": None},
+    {"name": "AnyDMX", "description": "Microsoft KM-TEST Loopback Adapter",
+     "index": 33, "status": "Up", "admin_up": True, "physical": True,
+     "link_speed": "1.2 Gbps", "mac": "02-00-4C-4F-4F-50",
+     "instance_id": "ROOT\\NET\\0007",
+     "addresses": [{"ip": "2.100.100.0", "prefix": 8}],
+     "dhcp": False, "gateway": None, "category": "Private"},
+    {"name": "Tailscale", "description": "Tailscale Tunnel",
+     "index": 32, "status": "Up", "admin_up": True, "physical": False,
+     "link_speed": "100 Gbps", "mac": "", "instance_id": "ROOT\\NET\\0001",
+     "addresses": [{"ip": "169.254.83.107", "prefix": 16}],
+     "dhcp": False, "gateway": None, "category": "Private"},
+])
+
+
+def test_list_adapters_parses_every_field(monkeypatch):
+    calls = []
+    monkeypatch.setattr(subprocess, "run",
+                        fake_runner(calls, stdout=LIST_PAYLOAD))
+    rows = vnet.list_adapters()
+    assert [r["name"] for r in rows] == ["BNR Inside", "Ethernet", "AnyDMX",
+                                         "Tailscale"]
+    inside = rows[0]
+    assert inside["index"] == 9 and isinstance(inside["index"], int)
+    assert inside["dhcp"] is True
+    assert inside["gateway"] == "192.168.31.3"
+    assert inside["category"] == "Private"
+    assert inside["link_speed"] == "1 Gbps"
+    assert inside["addresses"] == [{"ip": "192.168.31.248", "prefix": 24}]
+    # -Depth 4 is what keeps the nested addresses from serialising as type
+    # names; if it ever regresses this assertion is the one that fails.
+    assert "-Depth 4" in calls[0][-1]
+
+
+def test_list_adapters_handles_an_adapter_with_no_address(monkeypatch):
+    """An adapter with no IPv4 comes back as [], never [None].
+
+    The ContainsKey guard in the script is what makes that true: @($h[$i]) on
+    a missing key yields a one-element array holding null.
+    """
+    monkeypatch.setattr(subprocess, "run",
+                        fake_runner([], stdout=LIST_PAYLOAD))
+    empty = next(r for r in vnet.list_adapters() if r["name"] == "Ethernet")
+    assert empty["addresses"] == []
+
+
+def test_list_adapters_keeps_every_address_in_order(monkeypatch):
+    payload = json.dumps([{
+        "name": "Multi", "description": "d", "index": 4, "status": "Up",
+        "admin_up": True, "physical": True, "link_speed": "1 Gbps",
+        "mac": "", "instance_id": "x", "dhcp": False,
+        "gateway": None, "category": None,
+        "addresses": [{"ip": "10.0.0.5", "prefix": 8},
+                      {"ip": "2.0.0.5", "prefix": 8}]}])
+    monkeypatch.setattr(subprocess, "run", fake_runner([], stdout=payload))
+    rows = vnet.list_adapters()
+    assert [a["ip"] for a in rows[0]["addresses"]] == ["10.0.0.5", "2.0.0.5"]
+
+
+def test_the_loopback_adapter_counts_as_physical(monkeypatch):
+    """The AnyDMX adapter is physical; Tailscale is not.
+
+    Get-NetAdapter -Physical filters on Virtual, not HardwareInterface, and
+    the KM-TEST loopback reports Virtual=False. That is deliberate here: it is
+    a real NDIS miniport with a device node and belongs in the editable list
+    beside the real NICs. HardwareInterface is False for adapters users
+    certainly consider real, so it is not a usable substitute — this test
+    exists to stop the "fix".
+    """
+    monkeypatch.setattr(subprocess, "run",
+                        fake_runner([], stdout=LIST_PAYLOAD))
+    physical = {r["name"]: r["physical"] for r in vnet.list_adapters()}
+    assert physical["AnyDMX"] is True
+    assert physical["Tailscale"] is False
+
+
+# --------------------------------------------- interface settings: gating
+
+@pytest.mark.parametrize("call", [
+    lambda: vnet.set_static_ip(9, "2.0.0.1", 8),
+    lambda: vnet.set_dhcp(9),
+    lambda: vnet.set_adapter_name(9, "Lighting"),
+    lambda: vnet.set_adapter_enabled(9, False),
+])
+def test_changing_an_interface_requires_admin(monkeypatch, call):
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: False)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    with pytest.raises(VNetError, match="administrator"):
+        call()
+    assert calls == []
+
+
+@pytest.mark.parametrize("bad", ["", "2.100.100", "2.100.100.256", "hello"])
+def test_a_bad_address_never_reaches_the_system(monkeypatch, bad):
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    with pytest.raises(VNetError):
+        vnet.set_static_ip(9, bad, 8)
+    assert calls == []
+
+
+@pytest.mark.parametrize("bad", [0, 33, -1])
+def test_a_bad_prefix_never_reaches_the_system(monkeypatch, bad):
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    with pytest.raises(VNetError, match="Prefix"):
+        vnet.set_static_ip(9, "2.0.0.1", bad)
+    assert calls == []
+
+
+def test_a_bad_gateway_never_reaches_the_system(monkeypatch):
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    with pytest.raises(VNetError):
+        vnet.set_static_ip(9, "2.0.0.1", 8, gateway="not-an-ip")
+    assert calls == []
+
+
+@pytest.mark.parametrize("bad", ["33; Remove-Item", None, 0, "", 0x1000000])
+def test_a_bad_interface_index_never_reaches_the_system(monkeypatch, bad):
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    with pytest.raises(VNetError):
+        vnet.set_dhcp(bad)
+    assert calls == []
+
+
+# ---------------------------------------- interface settings: the commands
+
+def test_settings_target_the_interface_index(monkeypatch):
+    """A batch may rename and re-address at once, so the name is not a handle."""
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    vnet.set_static_ip("9", "2.100.100.5", "8")
+    script = calls[0][-1]
+    assert "-InterfaceIndex 9" in script
+    assert "-IPAddress '2.100.100.5'" in script
+    assert "-PrefixLength 8" in script
+
+
+def test_a_gateway_is_set_only_when_one_is_given(monkeypatch):
+    """The AnyDMX no-gateway rule must NOT be copied wholesale here.
+
+    configure_adapter() deliberately never sets a gateway, because the
+    2.0.0.0/8 on-link route must not become a path for ordinary traffic. A
+    user pinning a static address on their real NIC has the opposite problem:
+    without a gateway they lose every route off the subnet.
+    """
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    vnet.set_static_ip(9, "192.168.1.50", 24)
+    assert "DefaultGateway" not in calls[0][-1]
+    vnet.set_static_ip(9, "192.168.1.50", 24, gateway="192.168.1.1")
+    assert "-DefaultGateway '192.168.1.1'" in calls[1][-1]
+
+
+def test_dhcp_also_resets_the_dns_servers(monkeypatch):
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    vnet.set_dhcp(9)
+    script = calls[0][-1]
+    assert "-Dhcp Enabled" in script
+    assert "-ResetServerAddresses" in script
+
+
+def test_enable_and_disable_use_literal_verbs(monkeypatch):
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    vnet.set_adapter_enabled(9, True)
+    vnet.set_adapter_enabled(9, False)
+    assert "Enable-NetAdapter" in calls[0][-1]
+    assert "Disable-NetAdapter" in calls[1][-1]
+
+
+def test_a_rename_cannot_break_out_of_its_quotes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    with pytest.raises(VNetError, match="may only contain"):
+        vnet.set_adapter_name(9, "Any'; Remove-Item #")
+    assert calls == []
+
+
+# ------------------------------------------------------------- batching
+
+def _stub_live(monkeypatch, name="BNR Inside", index=9):
+    """Make _adapter_at report one adapter without touching PowerShell."""
+    monkeypatch.setattr(vnet, "list_adapters",
+                        lambda: [{"name": name, "index": index}])
+
+
+def test_a_batch_is_ordered_so_it_cannot_undo_itself():
+    """Enable first, disable last — addressing a disabled adapter fails."""
+    ops = vnet._validate_ops([{"op": "disable"},
+                              {"op": "rename", "name": "Lighting"}])
+    assert [o["op"] for o in ops] == ["rename", "disable"]
+    ops = vnet._validate_ops([{"op": "static", "ip": "2.0.0.1", "prefix": 8},
+                              {"op": "enable"}])
+    assert [o["op"] for o in ops] == ["enable", "static"]
+
+
+@pytest.mark.parametrize("ops", [
+    [{"op": "enable"}, {"op": "disable"}],
+    [{"op": "dhcp"}, {"op": "static", "ip": "2.0.0.1", "prefix": 8}],
+    [{"op": "dhcp"}, {"op": "dhcp"}],
+    [{"op": "format-c"}],
+    [],
+    "not-a-list",
+])
+def test_a_nonsense_batch_is_rejected(ops):
+    with pytest.raises(VNetError):
+        vnet._validate_ops(ops)
+
+
+def test_a_batch_is_validated_before_any_of_it_runs(monkeypatch):
+    """Half a reconfigured adapter is worse than none: the user cannot see
+    which half."""
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    _stub_live(monkeypatch)
+    with pytest.raises(VNetError):
+        vnet.apply_adapter(9, "BNR Inside",
+                           [{"op": "rename", "name": "Fine"},
+                            {"op": "static", "ip": "nope", "prefix": 8}])
+    assert calls == []
+
+
+def test_apply_requires_admin(monkeypatch):
+    calls = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: False)
+    monkeypatch.setattr(subprocess, "run", fake_runner(calls))
+    with pytest.raises(VNetError, match="administrator"):
+        vnet.apply_adapter(9, "BNR Inside", [{"op": "dhcp"}])
+    assert calls == []
+
+
+def test_apply_refuses_when_the_adapter_changed_underneath(monkeypatch):
+    """Windows recycles interface indexes, and the dialog's list can be
+    seconds old. This is what stops a stale row re-addressing the wrong NIC."""
+    ran = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(vnet, "set_dhcp", lambda i: ran.append(i))
+    _stub_live(monkeypatch, name="Something Else")
+    with pytest.raises(VNetError) as e:
+        vnet.apply_adapter(9, "BNR Inside", [{"op": "dhcp"}])
+    assert "Something Else" in str(e.value) and "BNR Inside" in str(e.value)
+    assert ran == []
+
+
+def test_apply_reports_an_adapter_that_vanished(monkeypatch):
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(vnet, "list_adapters", lambda: [])
+    with pytest.raises(VNetError, match="no longer present"):
+        vnet.apply_adapter(9, "BNR Inside", [{"op": "dhcp"}])
+
+
+def test_apply_runs_the_whole_batch_in_order(monkeypatch):
+    ran = []
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(vnet, "set_adapter_enabled",
+                        lambda i, on: ran.append(("enable", i, on)))
+    monkeypatch.setattr(vnet, "set_adapter_name",
+                        lambda i, n: ran.append(("rename", i, n)))
+    monkeypatch.setattr(vnet, "set_static_ip",
+                        lambda i, ip, p, g: ran.append(("static", i, ip, p, g)))
+    _stub_live(monkeypatch)
+    vnet.apply_adapter(9, "BNR Inside", [
+        {"op": "static", "ip": "2.100.100.5", "prefix": 8, "gateway": ""},
+        {"op": "rename", "name": "Lighting"},
+        {"op": "enable"}])
+    assert [r[0] for r in ran] == ["enable", "rename", "static"]
+    assert ran[2] == ("static", 9, "2.100.100.5", 8, "")
+
+
+def test_the_elevated_helper_still_only_knows_create_and_remove(tmp_path,
+                                                               monkeypatch):
+    """Interface editing requires admin in the GUI, so it never travels
+    through the untrusted request file. Nothing new crosses that boundary."""
+    monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    path = tmp_path / "req.json"
+    path.write_text(json.dumps({"action": "apply", "index": 9,
+                                "ops": [{"op": "disable"}]}), encoding="utf-8")
+    assert vnet.helper_main([vnet.HELPER_FLAG, str(path)]) == 1
+    result = json.loads(path.read_text(encoding="utf-8"))
+    assert result["ok"] is False
+    assert "Unknown action" in result["error"]

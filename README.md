@@ -20,9 +20,21 @@ with:
 Console → Art-Net → AnyDMX → USB dongle → fixtures
 ```
 
-No loopback adapter needed — AnyDMX binds UDP 6454 on all interfaces, so a
-console on the same PC (dot2 onPC, etc.) can unicast straight to the PC's own
-IP, and consoles on the network can broadcast normally.
+**Receiving** needs no special setup. AnyDMX binds UDP 6454 on the wildcard
+address *and* on every individual NIC address, so consoles on the network can
+broadcast normally, a console on the same PC can unicast straight to the PC's
+own IP, and no other app that bound a specific address first can capture that
+unicast out from under it. Windows loops locally-sent broadcast back to other
+local sockets, so same-PC capture works with nothing installed.
+
+**Transmitting** is where some consoles need help, and it is a separate
+problem. A console that picks its own Art-Net interface — dot2 among them —
+only ever accepts the Art-Net `2.x.x.x` range; with no such address on the PC
+it selects nothing, shows `0.0.0.0`, and sends not one packet. There is then
+nothing to capture, however well AnyDMX listens. That is what the built-in
+[interface setup](#interface-setup) is for: it creates a virtual adapter
+holding a `2.x` address, so the console has something to pick. Onyx lets you
+choose the interface explicitly and needs none of it.
 
 **It is also useful with no dongle attached at all.** Leave the output on
 *Monitor mode* and AnyDMX becomes a diagnostic window: every universe arriving,
@@ -111,7 +123,42 @@ local test sender, so a simulator can never be mistaken for a real console.
   interface is set to `0.0.0.0` transmits nothing at all. Pick an actual NIC
   IP in the console's network setup.
 
-## The lighting interface
+## Interface setup
+
+Press **Interface Setup** in the INPUT panel. The pop-up does two things: it
+lists every network adapter on the PC so you can fix the one that is wrong
+without going into the Windows settings, and it creates the virtual AnyDMX
+adapter, which Windows has no dialog for at all.
+
+### The adapter list
+
+Every adapter, real and virtual, one row each: name, address, whether it is on
+DHCP or static, and a coloured dot for its link state. Tags say the things you
+would otherwise have to work out — `LISTENING` is the one AnyDMX is capturing
+on, `GATEWAY` is the one carrying your internet connection, `VIRTUAL` is not a
+real NIC, `ANYDMX` is the one this app made. Hover a row for the hardware
+description, MAC and link speed, which is usually how you tell three identical
+Ethernet ports apart.
+
+Select one and the editor below it fills in: **Name**, **Addressing**
+(automatic or static), **Address** and prefix, and **Gateway**. Change what you
+need and press **Apply** — every change to one adapter goes in a single
+operation, so a rename and a re-address is one step, not two.
+
+**Art-Net 2.x** is the button worth knowing about. It sets the adapter to
+static with the lowest free address in the `2.100.100.x` range and no gateway
+— which is exactly what a console that picks its own interface needs, without
+you having to remember why.
+
+Two things are deliberate. Changing an adapter needs administrator rights, so
+if AnyDMX is not running elevated the editor is read-only and says so; restart
+it as administrator to make changes. And anything that could take the machine
+off the network — disabling an adapter, re-addressing the one carrying your
+internet connection or the one AnyDMX is listening on — asks first, with
+Cancel as the default. It never refuses outright: disabling one of two NICs is
+a legitimate thing to want.
+
+### The AnyDMX adapter
 
 Consoles that pick their own Art-Net interface — dot2 among them — only ever
 work on the Art-Net `2.x.x.x` range. With no such address on the PC they select
@@ -119,16 +166,17 @@ nothing, display `0.0.0.0`, and transmit not one packet. There is then nothing
 to capture, however well AnyDMX listens.
 
 So AnyDMX can create the landing spot itself: a virtual network adapter named
-**AnyDMX** holding `2.100.100.0/8` (both editable). Press **Create Interface**
-in the INPUT panel and set it up in the pop-up; the adapter then appears in the
-Input Port list. It replaces the old routine of installing a loopback
-adapter by hand and running a separate bridge application.
+**AnyDMX** holding `2.100.100.0/8` (both editable). Set the address at the
+bottom of the pop-up and press **Create**; the adapter then appears in the
+Input Port list. It replaces the old routine of installing a loopback adapter
+by hand and running a separate bridge application.
 
-- **No need to run AnyDMX as administrator.** Creating and removing the
-  adapter needs admin rights, so the button asks Windows for permission and
-  does that one step in a short-lived elevated helper. Approve the prompt and
-  it is done; decline it and nothing changes. Capturing Art-Net and sending
-  DMX never need elevation.
+- **No need to run AnyDMX as administrator for this part.** Creating and
+  removing the adapter needs admin rights, so the button asks Windows for
+  permission and does that one step in a short-lived elevated helper. Approve
+  the prompt and it is done; decline it and nothing changes. Capturing Art-Net
+  and sending DMX never need elevation either — only *editing* an existing
+  adapter, in the section above, requires an elevated launch.
 - The adapter **persists** across runs — it is infrastructure, not session
   state. Press **Remove** to delete it.
 - It uses Windows' own in-box loopback driver (`netloop.inf`, hardware ID

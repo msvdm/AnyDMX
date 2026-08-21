@@ -124,6 +124,15 @@ QComboBox, QSpinBox, QLineEdit {{
 QComboBox:hover, QSpinBox:hover, QLineEdit:hover {{
     border-color: {COLORS['accent_dim']};
 }}
+/* Not cosmetic. The interface editor greys out the address fields when an
+   adapter is set to DHCP, and read-only mode greys out all of them — without
+   this rule a disabled field is pixel-identical to an editable one, and the
+   whole affordance disappears. */
+QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled {{
+    background-color: {COLORS['bg']};
+    color: {COLORS['text_dim']};
+    border-color: {COLORS['border']};
+}}
 /* The drop-down and spin buttons are left to the platform style: a stylesheet
    that takes them over has to supply the arrow images too, and a hand-rolled
    arrow renders as a solid block on some styles. */
@@ -211,6 +220,22 @@ QPushButton#uni[compact="true"] {{
     padding: 4px 7px;
 }}
 QPushButton#uni:checked {{
+    background-color: {COLORS['accent_dim']};
+    color: #ffffff;
+    border-color: {COLORS['accent']};
+}}
+
+/* One adapter in the interface dialog: the universe chip, full width. The
+   selected row reads the same as a selected universe chip on purpose — it is
+   the same gesture. */
+QPushButton#nicRow {{
+    background-color: {COLORS['panel_hi']};
+    color: {COLORS['text_mid']};
+    text-align: left;
+    padding: 5px 10px;
+    font-size: 12px;
+}}
+QPushButton#nicRow:checked {{
     background-color: {COLORS['accent_dim']};
     color: #ffffff;
     border-color: {COLORS['accent']};

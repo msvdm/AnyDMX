@@ -67,7 +67,7 @@ ArtNetReceiver ──┐                       ┌── DmxOutput (USB serial)
 | `src/gui/title_bar.py` | The window's own title bar (the window is frameless) |
 | `src/gui/status_text.py` | Snapshot → LED, one-word state, and the bottom sentence (pure, no Qt) |
 | `src/gui/universe_bar.py` | The discovered-universe chips, as a column or a row |
-| `src/gui/vnet_dialog.py` | Lighting-interface pop-up: create/remove the virtual adapter |
+| `src/gui/vnet_dialog.py` | Interface setup pop-up: every adapter and its settings, plus create/remove the virtual one |
 | `src/gui/channel_view.py` | Live 512-channel grid (32×16) |
 | `src/gui/styles.py` | Color palette + QSS |
 | `src/utils/paths.py` | Portable paths (source run vs PyInstaller exe) |
@@ -164,6 +164,19 @@ from worker threads.
   has no `/add-device` and `devcon.exe` is not shipped. Creation goes through
   SetupAPI via ctypes (`netloop.inf`, hardware ID `*MSLOOP`). Removal can use
   `pnputil /remove-device`.
+- **`Get-NetAdapter -Physical` filters on `Virtual`, not `HardwareInterface`.**
+  Measured: the KM-TEST loopback the AnyDMX adapter is built on reports
+  `Virtual=False`, so it counts as *physical* and appears in the editable list
+  beside the real NICs — correct, it is a real NDIS miniport with a device
+  node. Tailscale and VirtualBox host-only report `Virtual=True`.
+  `HardwareInterface` is False for adapters users certainly consider real, so
+  it is not a usable substitute; `test_the_loopback_adapter_counts_as_physical`
+  exists to stop the "fix".
+- `ConvertTo-Json` defaults to **`-Depth 2`**, which serialises the nested
+  address objects in `list_adapters()` as type names instead of values.
+  `-Depth 4` is not optional. Nor is the `ContainsKey` guard: `@($h[$i])` on a
+  missing key yields `[null]`, not `[]`, and an adapter with no address is
+  common.
 - **`ctypes.wintypes` is wrong off Windows.** It maps `DWORD`/`BOOL` onto
   `c_ulong`/`c_long`, which are 32-bit only under Windows' LLP64 model — on an
   LP64 host they widen to 64 bits and every SetupAPI struct is laid out wrong
@@ -206,6 +219,13 @@ from worker threads.
   "no data"
 - Capturing Art-Net and driving DMX **never** require administrator rights.
   Only creating/removing the adapter does, via a short-lived elevated helper
+- **Editing an existing adapter requires an elevated launch; creating the
+  AnyDMX one does not.** The interface editor is read-only when unelevated, but
+  Create/Remove stay live — they have always worked through the helper, and
+  making the app's one reason to exist admin-only would be a regression. This
+  is also why no new action goes through the elevated helper: `apply_adapter`
+  is only ever reached from an already-elevated process, so `helper_main` and
+  the untrusted-request-file boundary keep exactly the two actions they had
 - `vnet` helper input is **untrusted**: the request file is writable by the
   unelevated user, so the elevated helper re-validates the action, the address,
   the prefix, and the adapter name before acting
