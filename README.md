@@ -1,77 +1,85 @@
 # AnyDMX
 
-**Art-Net in → DMX out over a cheap USB-RS485 dongle, plus a live view of what
-is actually on the wire. One app, one window. Free, MIT-licensed, no account,
-no telemetry.**
+**Give your lighting console a network interface to send Art-Net to, and get
+DMX512 out of a cheap USB dongle. One app, one window. Free, MIT-licensed, no
+account, no telemetry.**
 
-AnyDMX presents itself on the network as a real Art-Net node (consoles discover
-it via ArtPoll), receives ArtDMX for a selected universe, and streams DMX512
-out any FTDI/CH340-based USB serial adapter using the Open DMX technique.
+I'm a sound engineer, not a programmer or a lighting designer, so don't judge me too much :).
+I kept running into the same annoying problem: I had
+a lighting console that speaks Art-Net, and a cheap USB-RS485 dongle that
+speaks DMX, and getting from one to the other meant installing a loopback
+adapter by hand and then running somebody else's bridge application on top of
+it. Two pieces of setup, neither of which explains itself when it goes wrong.
 
-It replaces chains like:
-
-```
-Console → Art-Net → bridge app → loopback adapter → Open DMX driver → fixtures
-```
-
-with:
+AnyDMX is my attempt to collapse that into one window:
 
 ```
 Console → Art-Net → AnyDMX → USB dongle → fixtures
 ```
 
-**Receiving** needs no special setup. AnyDMX binds UDP 6454 on the wildcard
-address *and* on every individual NIC address, so consoles on the network can
-broadcast normally, a console on the same PC can unicast straight to the PC's
-own IP, and no other app that bound a specific address first can capture that
-unicast out from under it. Windows loops locally-sent broadcast back to other
-local sockets, so same-PC capture works with nothing installed.
+instead of
 
-**Transmitting** is where some consoles need help, and it is a separate
-problem. A console that picks its own Art-Net interface — dot2 among them —
-only ever accepts the Art-Net `2.x.x.x` range; with no such address on the PC
-it selects nothing, shows `0.0.0.0`, and sends not one packet. There is then
-nothing to capture, however well AnyDMX listens. That is what the built-in
-[interface setup](#interface-setup) is for: it creates a virtual adapter
-holding a `2.x` address, so the console has something to pick. Onyx lets you
-choose the interface explicitly and needs none of it.
+```
+Console → Art-Net → bridge app → loopback adapter → Open DMX driver → fixtures
+```
 
-**It is also useful with no dongle attached at all.** Leave the output on
-*Monitor mode* and AnyDMX becomes a diagnostic window: every universe arriving,
-who is sending it, at what rate, and all 512 live levels. When a rig is dark
-and nobody can say whether the console is even transmitting, that is usually
-the question worth answering first.
+It also tells you what it is seeing, which turned out to matter more than I
+expected. When the rig is dark, the first question is never "is the bridge
+configured right" — it is "is the console sending anything at all, and on which
+universe". AnyDMX answers that on screen.
 
-## Who made this, and why
+## What it actually does
 
-This is a hobby project, and it is worth being straight about where it came
-from.
+Three things, in order:
 
-Marian Raynov is a sound engineer, not a software developer. He had a small,
-annoying problem: getting Art-Net out of a lighting console and into a cheap
-USB DMX dongle meant running a chain of a loopback adapter plus somebody else's
-bridge app, and it was fragile in ways that were hard to see. So AnyDMX exists
-to collapse that chain into one window that also *explains itself* when it
-isn't working.
+1. **Gives the console somewhere to send.** Some consoles pick their own
+   Art-Net interface and will only use the Art-Net `2.x.x.x` range. If no such
+   address exists on the PC they pick nothing, show `0.0.0.0`, and transmit
+   nothing at all. AnyDMX can create that address for them — see
+   [Interface setup](#interface-setup).
+2. **Captures the Art-Net.** It listens on UDP 6454 on the wildcard address
+   *and* on every individual NIC address. Broadcast from a console on the
+   network works, and so does unicast from an app on the same PC — Windows
+   loops locally-sent broadcast back to other local sockets, so same-PC capture
+   needs nothing installed. The per-NIC binds matter too: without them, another
+   app that bound a specific address first would take the unicast away from
+   AnyDMX.
+3. **Streams DMX.** 512 channels out an FTDI or CH340 USB serial adapter using
+   the Open DMX technique, at a steady ~34 fps, holding the last frame if the
+   console stops.
 
-The code was written by **Claude** (Anthropic's Opus model) working with him,
-session by session. He brings the problem, the console, the dongle, the
-fixtures and every real-world test; Claude writes and refactors the Python.
-That's not a disclaimer — it's just how it was built, and saying so seems more
-useful than letting people wonder about the commit history.
+It also **answers ArtPoll and broadcasts ArtPollReply** as the spec asks, so
+node scanners should be able to find it. I have not confirmed that on a real
+console: dot2 never lists third-party Art-Net nodes at all, and I have not
+finished working through Onyx's side of it. Treat it as written but unproven —
+nothing about capturing or sending depends on it.
 
-One consequence of that worth knowing: the decisions that cost a real debugging
-session are written down in [CLAUDE.md](CLAUDE.md) as facts with their
-reasoning, so they don't get "simplified" back into bugs later. If you want to
-know *why* something is the way it is — especially the frame timing — that file
+**It is useful with no dongle attached at all.** Leave the output on *Monitor
+mode* and AnyDMX is just a window onto the wire: every universe arriving, who
+is sending it, at what rate, and all 512 live levels.
+
+## Who wrote this
+
+Claude — Anthropic's Opus model.
+
+I am not a software developer. I know what the problem is, I have the console
+and the dongle and the fixtures, and I test every change on real hardware.
+Claude writes and refactors the Python. That is the honest division of labour
+and I would rather say it plainly than have people wonder about the commit
+history.
+
+One thing worth knowing if you read the source: the decisions that cost us a
+real debugging session are written down in [CLAUDE.md](CLAUDE.md), with the
+reasoning, so they do not get "simplified" back into bugs later. If you want to
+know *why* something is the way it is — the frame timing especially — that file
 is the honest answer, not this one.
 
 ## Requirements
 
 - Windows, Python 3.10+
 - `pip install -r requirements.txt` (PySide6, pyserial)
-- A USB-RS485 / Open DMX-style dongle (FTDI chip recommended, CH340 usually
-  works) — or nothing at all, if you only want to monitor
+- A USB-RS485 / Open DMX-style dongle — FTDI recommended, CH340 usually works.
+  Or nothing at all, if you only want to watch.
 
 ## Run
 
@@ -79,129 +87,131 @@ is the honest answer, not this one.
 python AnyDMX.py
 ```
 
-The bridge starts by itself — there is nothing to press. The window draws its
-own title bar (**DMX bridge**, with the rescan ⟳ beside the app mark on the
-left and the window buttons on the right), so it is dark on every desktop
-instead of wearing the system's. The window is the signal path: **INPUT** on
-the left, **OUTPUT** on the right, and one line along the bottom saying what is
+There is no Start button. The bridge arms itself and re-arms whenever you
+change a setting. The window is laid out as the signal path: **INPUT** on the
+left, **OUTPUT** on the right, one line along the bottom saying what is
 happening right now.
 
-1. **Input Port** — leave it on "All interfaces", or pick a specific IP on
-   multi-NIC machines (e.g. a dedicated lighting LAN). That IP is what the node
-   advertises to consoles.
-2. **Output Device** — the COM port of your dongle (press ⟳ after plugging it
-   in). Leave it on "Monitor mode" to watch Art-Net with no hardware attached.
-3. **Universe** — or just click one in the list of universes actually arriving,
-   with its source and rate, so you do not have to know the number in advance.
-   It sits under the Input Port in the compact window and moves to the bottom
-   strip when the channel grid is open.
-4. Green indicators = packets arriving + DMX streaming. Changing any selection
-   re-arms the bridge immediately.
-5. **▼ DMX values** opens the 512-channel grid; closed, the window is small
-   enough to leave running beside the console. Each state keeps the size you
-   last gave it, so the arrow toggles between your two windows.
+1. **Input Port** — leave it on "All interfaces", or pick a specific IP if you
+   have a dedicated lighting network.
+2. **Output Device** — your dongle's COM port (press ⟳ after plugging it in),
+   or leave it on "Monitor mode" to watch with no hardware.
+3. **Universe** — type it, or just click one in the list of universes actually
+   arriving, which saves knowing the number in advance.
+4. Green indicators mean packets arriving and DMX streaming.
+5. **▼ DMX values** opens the 512-channel grid. Closed, the window is small
+   enough to sit beside the console; each state remembers the size you left it
+   at.
 
-The channel grid shows all 512 levels live. A frame that is being *held*
-because input stopped is labelled as held, and channels above a short frame's
-length are drawn muted rather than cleared — levels nobody is sending must
-never look identical to live ones. Traffic from `127.0.0.1` is labelled as a
-local test sender, so a simulator can never be mistaken for a real console.
-
-## Console notes
-
-- **dot2 / dot2 onPC** never lists third-party Art-Net nodes — its network
-  view shows MA hardware only. That's normal: just enable Art-Net output in
-  dot2 and it broadcasts to the network; AnyDMX picks it up.
-- **Onyx** discovers AnyDMX via ArtPoll and lists it under
-  EtherDMX → Devices, then may switch the universe to unicast.
-- **Console on the same PC as AnyDMX:** this works — Windows copies
-  locally-sent broadcast back to other local apps. AnyDMX binds the wildcard
-  address *and* every individual NIC address, so unicast Art-Net cannot be
-  captured out from under it by another app that bound a specific address
-  first.
-- **Output must be aimed at a real adapter.** A lighting app whose Art-Net
-  interface is set to `0.0.0.0` transmits nothing at all. Pick an actual NIC
-  IP in the console's network setup.
+A frame that is being *held* because input stopped is labelled as held, and
+channels above a short frame's length are drawn muted rather than cleared.
+Levels nobody is sending must never look identical to live ones — that reads as
+a bug every time. Traffic from `127.0.0.1` is labelled as a local test sender
+for the same reason.
 
 ## Interface setup
 
-Press **Interface Setup** in the INPUT panel. The pop-up does two things: it
-lists every network adapter on the PC so you can fix the one that is wrong
-without going into the Windows settings, and it creates the virtual AnyDMX
-adapter, which Windows has no dialog for at all.
+Press **Interface Setup** in the INPUT panel. It does two jobs: it lists every
+network adapter on the PC so you can fix the one that is wrong without going
+into the Windows settings, and it creates the virtual AnyDMX adapter, which
+Windows has no dialog for at all.
+
+Nobody enjoys the Windows network settings. That is the whole reason this
+exists.
 
 ### The adapter list
 
-Every adapter, real and virtual, one row each: name, address, whether it is on
-DHCP or static, and a coloured dot for its link state. Tags say the things you
-would otherwise have to work out — `LISTENING` is the one AnyDMX is capturing
-on, `GATEWAY` is the one carrying your internet connection, `VIRTUAL` is not a
-real NIC, `ANYDMX` is the one this app made. Hover a row for the hardware
-description, MAC and link speed, which is usually how you tell three identical
-Ethernet ports apart.
+Every adapter, one row each: name, address, DHCP or static, and a coloured dot
+for link state. Tags say the things you would otherwise have to work out —
+`LISTENING` is the one AnyDMX is capturing on, `GATEWAY` is the one carrying
+your internet connection, `VIRTUAL` is not a real NIC, `ANYDMX` is the one this
+app made. Hover a row for the hardware description, MAC and link speed, which
+is usually how you tell three identical Ethernet ports apart.
 
-Select one and the editor below it fills in: **Name**, **Addressing**
-(automatic or static), **Address** and prefix, and **Gateway**. Change what you
-need and press **Apply** — every change to one adapter goes in a single
-operation, so a rename and a re-address is one step, not two.
+Select one and the editor fills in: **Name**, **Addressing** (automatic or
+static), **Address** and prefix, and **Gateway**. Press **Apply** and every
+change to that adapter goes in one operation — a rename and a re-address is one
+step, not two.
 
-**Art-Net 2.x** is the button worth knowing about. It sets the adapter to
-static with the lowest free address in the `2.100.100.x` range and no gateway
-— which is exactly what a console that picks its own interface needs, without
-you having to remember why.
+**Art-Net 2.x** is the button worth knowing about. One click sets the adapter
+static, `/8`, no gateway, and the lowest free address in the `2.100.100.x`
+range — which is exactly what an auto-picking console needs, without having to
+remember why.
 
-Two things are deliberate. Changing an adapter needs administrator rights, so
-if AnyDMX is not running elevated the editor is read-only and says so; restart
-it as administrator to make changes. And anything that could take the machine
-off the network — disabling an adapter, re-addressing the one carrying your
-internet connection or the one AnyDMX is listening on — asks first, with
-Cancel as the default. It never refuses outright: disabling one of two NICs is
-a legitimate thing to want.
+Two deliberate limits:
+
+- Editing an adapter needs administrator rights. If AnyDMX is not running
+  elevated the editor is read-only and says so. Restart it as administrator to
+  make changes.
+- Anything that could take the machine off the network — disabling an adapter,
+  re-addressing the one carrying your internet or the one AnyDMX is listening
+  on — asks first, with Cancel as the default, and warns louder over a remote
+  desktop session. It never refuses outright: disabling one of two NICs is a
+  perfectly reasonable thing to want.
 
 ### The AnyDMX adapter
 
+This is the part I actually built the app for.
+
 Consoles that pick their own Art-Net interface — dot2 among them — only ever
-work on the Art-Net `2.x.x.x` range. With no such address on the PC they select
-nothing, display `0.0.0.0`, and transmit not one packet. There is then nothing
-to capture, however well AnyDMX listens.
+accept the `2.x.x.x` range. With no such address on the PC they select nothing,
+display `0.0.0.0`, and send not one packet. There is nothing to capture,
+however well AnyDMX listens.
 
-So AnyDMX can create the landing spot itself: a virtual network adapter named
+So AnyDMX creates the landing spot itself: a virtual network adapter named
 **AnyDMX** holding `2.100.100.0/8` (both editable). Set the address at the
-bottom of the pop-up and press **Create**; the adapter then appears in the
-Input Port list. It replaces the old routine of installing a loopback adapter
-by hand and running a separate bridge application.
+bottom of the pop-up and press **Create**. It then appears in the Input Port
+list, and in the console's interface list.
 
-- **No need to run AnyDMX as administrator for this part.** Creating and
-  removing the adapter needs admin rights, so the button asks Windows for
+- **You do not need to run AnyDMX as administrator for this.** Creating and
+  removing the adapter does need admin rights, so the button asks Windows for
   permission and does that one step in a short-lived elevated helper. Approve
-  the prompt and it is done; decline it and nothing changes. Capturing Art-Net
-  and sending DMX never need elevation either — only *editing* an existing
-  adapter, in the section above, requires an elevated launch.
-- The adapter **persists** across runs — it is infrastructure, not session
+  it and you are done; decline and nothing changes. Capturing Art-Net and
+  sending DMX never need elevation — only *editing* an existing adapter does.
+- The adapter **persists** across runs. It is infrastructure, not session
   state. Press **Remove** to delete it.
 - It uses Windows' own in-box loopback driver (`netloop.inf`, hardware ID
   `*MSLOOP`). Nothing is downloaded or bundled.
-- It is given **no default gateway**, so the `2.0.0.0/8` route can never become
-  a path for ordinary traffic, and its firewall profile is set to Private.
+- It gets **no default gateway**, so the `2.0.0.0/8` route can never become a
+  path for ordinary traffic, and its firewall profile is set to Private.
 - **Restart your console after creating it** — lighting apps enumerate network
   interfaces at startup and will not notice a new one otherwise.
 
-Onyx lets you select the interface explicitly, so it needs none of this: point
-it at any normal address and AnyDMX will hear it.
+## Console notes
+
+Only two consoles have ever been tested here, both by me, on one Windows
+machine. Take the rest as untested rather than unsupported.
+
+- **dot2 / dot2 onPC** works, and is what most of this was built against. It
+  will not list AnyDMX in its network view — dot2 shows MA hardware only, which
+  is normal and not a fault. Just enable Art-Net output and it broadcasts;
+  AnyDMX picks it up. It does need the `2.x.x.x` interface above.
+- **Onyx** lets you choose the Art-Net interface explicitly, so it needs no
+  virtual adapter. It transmits, but I have not worked through its patch and
+  interface setup properly yet, so I cannot claim the whole path is proven.
+- **A console on the same PC** works. No loopback adapter is needed for the
+  *capture* — Windows handles that. The adapter is only about giving an
+  auto-picking console an address it will accept.
+- **Point the console at a real adapter.** A lighting app whose Art-Net
+  interface reads `0.0.0.0` is transmitting nothing at all, and no setting in
+  AnyDMX can help.
+
+If your console is not on this list, I would genuinely like to know how it
+goes — see [below](#ideas-problems-contributions).
 
 ## When nothing arrives
 
-Run the sniffer — it listens on every local address for both Art-Net (6454)
-and sACN (5568), and reports every stream it sees with the universe, source,
-rate, and whether it was broadcast or unicast:
+Run the sniffer. It listens on every local address for both Art-Net (6454) and
+sACN (5568) and reports every stream it sees, with universe, source, rate, and
+whether it was broadcast or unicast:
 
 ```
 python tools/artnet_sniff.py
 ```
 
-Then switch on your lighting app's output and watch. If the sniffer shows
-nothing, the app is not transmitting and no bridge setting will help — the
-problem is in the console's network/DMX configuration.
+Then turn your lighting app's output on and watch. If the sniffer shows
+nothing, the app is not transmitting and no AnyDMX setting will change that —
+the problem is in the console's own network or DMX configuration.
 
 ## Test without a console or hardware
 
@@ -209,11 +219,43 @@ problem is in the console's network/DMX configuration.
 python tools/artnet_test_sender.py
 ```
 
-sends an animated test pattern to 127.0.0.1 — the channel grid should
-ripple. It prints a loud banner: DMX produced while it runs proves the
-output path only, and says nothing about your console. A hidden simulator
-once made a broken bridge look finished here, which is why it announces
+sends an animated pattern to 127.0.0.1 and the channel grid should ripple. It
+prints a loud banner on purpose: DMX produced while it runs proves the output
+path only, and says nothing about your console. A hidden test sender once made
+a broken bridge look finished here and cost me a day, which is why it announces
 itself and why the GUI labels its traffic.
+
+## About the ~34 fps
+
+That number is a choice, not a limit waiting to be raised.
+
+A full DMX frame is 513 slots × 11 bits at 250000 baud — 22.6 ms of wire time —
+so with break and mark-after-break the physical ceiling is around 42 fps. The
+trap is that `flush()` empties the *driver* buffer, not the USB chip's FIFO,
+while the break acts on the UART immediately and out of band. Assert the break
+on a fixed schedule and sooner or later it lands while the previous frame is
+still draining, corrupting its tail. The symptom is every fixture on the line
+twitching at once, intermittently, while the channel grid sits perfectly still.
+
+So AnyDMX waits for the frame to drain and holds a minimum period, and there is
+deliberately no output-rate setting. If you have used a bridge with a fixed fps
+dropdown where only one value looks stable, this is what you were fighting.
+
+## Status
+
+**Works on real hardware:** the virtual adapter is created on real Windows,
+dot2 picks it up and transmits, Art-Net is captured, and DMX drives real
+fixtures steadily at 33-35 fps.
+
+**Not proven yet:** Onyx as a source, ArtPoll discovery on any console, and the
+PyInstaller build — so for now this runs from source.
+
+Things I am interested in, which are not promises: sACN (E1.31) input, several
+universes and outputs at once, sending Art-Net on to ESP32-style nodes, tray
+mode and autostart.
+
+**No warranty, and this drives real lighting hardware.** Test it on a bench
+before you put it in front of an audience.
 
 ## Tests
 
@@ -221,64 +263,29 @@ itself and why the GUI labels its traffic.
 python -m pytest
 ```
 
-The suite is mockable end to end — no real COM port, network or adapter is
-ever touched by it. Please keep it that way in any patch.
-
-## About the frame rate
-
-AnyDMX streams at roughly **34 fps**, and that is a deliberate choice rather
-than a limitation waiting to be fixed.
-
-A full DMX frame is 513 slots × 11 bits at 250000 baud = 22.6 ms of wire time,
-so with break and mark-after-break the physical ceiling is about 42 fps. The
-trap is that `flush()` empties the *driver* buffer, not the USB chip's FIFO,
-while `break_condition` acts on the UART immediately and out of band. Assert
-the break on a fixed schedule and it lands while the previous frame is still
-draining, corrupting its tail — the symptom is every fixture on the line
-twitching at once, intermittently, while the channel grid sits perfectly
-still.
-
-That is why there is no "output rate" dropdown here. AnyDMX waits for the
-frame to drain and holds a minimum period instead. If you have used a bridge
-with a fixed fps setting where only one value looks stable, this is what you
-were fighting.
-
-## Status
-
-Verified on real hardware: the virtual adapter is created on real Windows,
-dot2 picks it up and transmits, Art-Net is captured, and DMX drives real
-fixtures steadily at 33-35 fps.
-
-Not yet proven: **Onyx as a source** (it transmits, but its own patch and
-interface setup has not been worked through) and the **PyInstaller build**, so
-for now this runs from source.
-
-Ideas that may or may not happen — treat these as interests, not promises:
-sACN (E1.31) input, multiple universes and outputs, Art-Net sending to
-ESP32-style nodes, tray mode and autostart.
-
-**No warranty, and this drives real lighting hardware.** Test it on a bench
-before you put it in front of an audience. See [LICENSE](LICENSE).
+Everything is mocked — no real COM port, network or adapter is touched. If you
+send a patch, please keep it that way: someone with no dongle, no console and
+no admin rights must still get a clean green run.
 
 ## Ideas, problems, contributions
 
 All welcome, from anyone, at any level of detail.
 
-- Something doesn't work, or the status line said something confusing? Open an
+- Something not working, or a status message that confused you? Open an
   [issue](https://github.com/msvdm/AnyDMX/issues). "It just sat there saying X
-  and I didn't know what to do" is a genuinely useful bug report here — half
-  the point of this app is explaining itself.
-- Tested it with a console that isn't dot2 or Onyx? Please say so either way.
-  Working reports are as valuable as broken ones, and there are only two
-  consoles in the notes above because there are only two here.
-- Got an idea for a feature? Open an issue and describe the problem you're
-  hitting, not just the feature — the problem is the part that's hard to guess.
-- Pull requests are fine. Run `python -m pytest` first, and have a look at
-  [CLAUDE.md](CLAUDE.md) — it records which decisions were expensive to reach,
-  so you can tell the load-bearing parts from the arbitrary ones.
+  and I did not know what to do" is a genuinely useful report here — half the
+  point of this app is explaining itself, so that is a real bug.
+- Tried it with a console that is not dot2 or Onyx? Please tell me either way.
+  A report that it worked is as useful as one that it did not, and there are
+  only two consoles in the notes above because there are only two here.
+- Got a feature idea? Open an issue and describe the problem you are hitting,
+  not just the feature — the problem is the part I cannot guess.
+- Pull requests are fine. Run the tests first, and skim
+  [CLAUDE.md](CLAUDE.md) so you can tell the load-bearing decisions from the
+  arbitrary ones.
 
-There is no roadmap to be behind on and nothing is owed to anyone. It's a
-hobby project that solves one problem well.
+There is no roadmap to fall behind on. It is a hobby project that solves one
+problem well.
 
 ## License
 
