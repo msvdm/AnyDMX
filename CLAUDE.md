@@ -1,5 +1,17 @@
 # AnyDMX — Development Rules
 
+> **If you arrived here from the repo:** this file is the working brief for
+> Claude, the AI model that writes this project's code with its author. It is
+> checked in on purpose. Most of it is not style preference — it is the
+> decisions that cost a real debugging session, written down with the reasoning
+> so they don't get "simplified" back into bugs later. Read it as the honest
+> account of why the code looks the way it does; the sections marked *do not
+> re-litigate* are the ones that were expensive.
+>
+> AnyDMX is MIT-licensed and open to issues and pull requests — see
+> [README.md](README.md). Human contributors are as welcome as the model is,
+> and these rules apply to both.
+
 ## Core Principles
 
 1. **Keep things simple** — minimal complexity, straightforward solutions
@@ -236,3 +248,16 @@ holds steady at 33-35 fps.
 
 Still unproven: Onyx as a source (it transmits, but its own patch/interface
 setup has not been worked through), and the PyInstaller build.
+
+## The repo is public
+
+AnyDMX is on GitHub under MIT. Two things follow from that:
+
+- **Other people's hardware is the point.** Only dot2 and Onyx have ever been
+  tested here, on one Windows machine. A bug report from a console or dongle
+  nobody here owns is the most valuable thing this project can receive — so
+  when something fails, the GUI must say *what* it saw, never just "no data".
+  That invariant is now load-bearing for bug reports too, not only for users.
+- **Nothing in the tests may touch real hardware or the network.** A
+  contributor running `python -m pytest` on a machine with no dongle, no
+  console and no admin rights must get a clean green run.
