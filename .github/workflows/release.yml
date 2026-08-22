@@ -79,9 +79,27 @@ jobs:
 
       # Never build a release from a red tree.
       - name: Run the test suite
+        shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q
+        run: |
+          set +e
+          python -m pytest -q -rf > pytest.log 2>&1
+          code=$?
+          cat pytest.log
+          if [ $code -ne 0 ]; then
+            # Action logs need a signed-in GitHub account to read; annotations
+            # do not. Put the actual failure somewhere the maintainer can see
+            # it from a phone, or from a script, without signing in.
+            python - <<'EOF'
+          import pathlib
+          text = pathlib.Path("pytest.log").read_text(errors="replace")
+          tail = "\n".join(text.splitlines()[-40:])
+          esc = tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=Test suite failed::{esc}")
+          EOF
+            exit $code
+          fi
 
       - name: Build
         run: pyinstaller --noconfirm --clean AnyDMX.spec

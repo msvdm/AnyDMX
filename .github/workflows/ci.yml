@@ -44,9 +44,32 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # TEMPORARY: the release job installs PyInstaller and its Windows-only
+      # dependencies, and its test run fails there while this one passes on the
+      # same commit. Installing it here reproduces that environment without
+      # spending a tag per attempt. Remove once the cause is found.
+      - name: Install PyInstaller (probe)
+        run: pip install pyinstaller==6.22.2
+
       - name: Run the test suite
+        shell: bash
         env:
-          # No display on a runner. The Qt tests set this themselves; setting
-          # it here covers anything added later that forgets to.
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q
+        run: |
+          set +e
+          python -m pytest -q -rf > pytest.log 2>&1
+          code=$?
+          cat pytest.log
+          if [ $code -ne 0 ]; then
+            # Action logs need a signed-in GitHub account to read; annotations
+            # do not. Put the actual failure somewhere the maintainer can see
+            # it from a phone, or from a script, without signing in.
+            python - <<'EOF'
+          import pathlib
+          text = pathlib.Path("pytest.log").read_text(errors="replace")
+          tail = "\n".join(text.splitlines()[-40:])
+          esc = tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=Test suite failed::{esc}")
+          EOF
+            exit $code
+          fi
