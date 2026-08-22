@@ -35,9 +35,6 @@ from PySide6.QtWidgets import (
 
 from src.core import vnet
 from src.gui.styles import COLORS
-from src.utils.logger import get_logger
-
-log = get_logger(__name__)
 
 # Room for eight rows before it scrolls. The work area on a 300%-scaled 4K
 # screen is 680 px tall (see CLAUDE.md) and the dialog has to fit inside it
@@ -713,7 +710,6 @@ class InterfaceDialog(QDialog):
             task()
         except vnet.VNetError as e:
             failed = str(e)
-            log.warning("Interface operation failed: %s", e)
         finally:
             QApplication.restoreOverrideCursor()
             self._busy = False

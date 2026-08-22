@@ -71,6 +71,7 @@ ArtNetReceiver ──┐                       ┌── DmxOutput (USB serial)
 | `src/gui/channel_view.py` | Live 512-channel grid (32×16) |
 | `src/gui/styles.py` | Color palette + QSS |
 | `src/utils/paths.py` | Portable paths (source run vs PyInstaller exe) |
+| `assets/AnyDMX.ico` | App icon (multi-size) — nothing imports it yet; it is waiting for the build |
 | `tools/artnet_sniff.py` | Diagnostic: what is actually on the wire (Art-Net + sACN) |
 | `tools/artnet_test_sender.py` | Hardware-free test: animated ArtDMX to localhost |
 

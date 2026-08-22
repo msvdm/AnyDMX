@@ -20,12 +20,9 @@ ENV/
 env/
 
 # User Data & Configuration
-settings/
+settings.json
+settings.json.tmp
 *.json.bak
-
-# Logs
-logs/
-*.log
 
 # IDE & Editor
 .vscode/

@@ -30,10 +30,6 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-from src.utils.logger import get_logger
-
-log = get_logger(__name__)
-
 ADAPTER_NAME = "AnyDMX"
 DEFAULT_IP = "2.100.100.0"
 DEFAULT_PREFIX = 8
@@ -344,14 +340,11 @@ def create_device_node():
             _fail("Reading the new device ID")
         instance_id = buf.value
 
-        reboot = BOOL(False)
+        reboot = BOOL(False)  # required out-param; the flag is not acted on
         if not _newdev().UpdateDriverForPlugAndPlayDevicesW(
                 None, HARDWARE_ID, LOOPBACK_INF, INSTALLFLAG_FORCE,
                 ctypes.byref(reboot)):
             _fail("Binding the loopback driver")
-        if reboot.value:
-            log.warning("Windows reports a reboot is required for %s", instance_id)
-        log.info("Created loopback device %s", instance_id)
         return instance_id
     finally:
         api.SetupDiDestroyDeviceInfoList(dev_info)
@@ -383,7 +376,6 @@ def create_adapter(name=ADAPTER_NAME, ip=DEFAULT_IP, prefix=DEFAULT_PREFIX):
             f"{e} The device was created as {instance_id} but could not be "
             f"finished — use Remove to clear it up.") from e
     state = find_adapter(name) or {"name": name, "instance_id": instance_id}
-    log.info("Lighting interface ready: %s at %s/%s", name, ip, prefix)
     return state
 
 
@@ -395,7 +387,7 @@ def _rename_adapter(instance_id, name, attempts=10, delay=1.0):
     and leaving a correctly-created adapter under the wrong name.
     """
     device, alias = _q(instance_id), _q(name)
-    for attempt in range(attempts):
+    for _ in range(attempts):
         out = _powershell(
             "$a = Get-NetAdapter -IncludeHidden | "
             f"Where-Object {{ $_.PnPDeviceID -eq '{device}' }}; "
@@ -403,9 +395,6 @@ def _rename_adapter(instance_id, name, attempts=10, delay=1.0):
             f"if ($a.Name -ne '{alias}') {{ Rename-NetAdapter -Name $a.Name "
             f"-NewName '{alias}' }}; 'ok' }}")
         if "ok" in out:
-            if attempt:
-                log.info("Adapter %s appeared after %.0f s", instance_id,
-                         attempt * delay)
             return
         time.sleep(delay)
     raise VNetError("The new adapter did not appear in Windows in time.")
@@ -433,7 +422,6 @@ def configure_adapter(name=ADAPTER_NAME, ip=DEFAULT_IP, prefix=DEFAULT_PREFIX):
         f"-PrefixLength {int(prefix)} -ErrorAction Stop | Out-Null; "
         f"Set-NetConnectionProfile -InterfaceAlias '{alias}' "
         "-NetworkCategory Private -ErrorAction SilentlyContinue")
-    log.info("Lighting interface %s addressed %s/%s", name, ip, prefix)
 
 
 def remove_adapter(instance_id=None, name=ADAPTER_NAME):
@@ -467,7 +455,6 @@ def remove_adapter(instance_id=None, name=ADAPTER_NAME):
         detail = (proc.stdout or proc.stderr or "").strip().splitlines()
         raise VNetError(f"Could not remove {instance_id}: "
                         f"{detail[-1] if detail else 'pnputil failed'}")
-    log.info("Removed lighting interface %s", instance_id)
     return True
 
 
@@ -539,7 +526,6 @@ def set_static_ip(index, ip, prefix, gateway=""):
         "-Confirm:$false -ErrorAction SilentlyContinue; "
         f"New-NetIPAddress -InterfaceIndex {index} -IPAddress '{_q(ip)}' "
         f"-PrefixLength {int(prefix)}{route} -ErrorAction Stop | Out-Null")
-    log.info("Interface %s addressed %s/%s", index, ip, prefix)
 
 
 def set_dhcp(index):
@@ -561,7 +547,6 @@ def set_dhcp(index):
         "-Dhcp Enabled -ErrorAction Stop; "
         f"Set-DnsClientServerAddress -InterfaceIndex {index} "
         "-ResetServerAddresses -ErrorAction SilentlyContinue")
-    log.info("Interface %s handed back to DHCP", index)
 
 
 def set_adapter_name(index, new_name):
@@ -578,7 +563,6 @@ def set_adapter_name(index, new_name):
         f"Get-NetAdapter -InterfaceIndex {index} -ErrorAction Stop | "
         f"Rename-NetAdapter -NewName '{_q(new_name)}' -Confirm:$false "
         "-ErrorAction Stop")
-    log.info("Interface %s renamed to %s", index, new_name)
 
 
 def set_adapter_enabled(index, enabled):
@@ -595,7 +579,6 @@ def set_adapter_enabled(index, enabled):
     _powershell(
         f"Get-NetAdapter -InterfaceIndex {index} -ErrorAction Stop | "
         f"{verb} -Confirm:$false -ErrorAction Stop")
-    log.info("Interface %s %s", index, "enabled" if enabled else "disabled")
 
 
 # Enable before addressing (a disabled adapter cannot be given an address),
@@ -676,8 +659,6 @@ def apply_adapter(index, expect_name, ops):
             "— nothing was changed. Refresh and try again.")
     for change in ops:
         _RUNNERS[change["op"]](index, change)
-    log.info("Applied %s to interface %s (%s)",
-             [c["op"] for c in ops], index, expect_name)
     return _adapter_at(index)
 
 
@@ -839,8 +820,10 @@ def helper_main(argv):
     except VNetError as e:
         result = {"ok": False, "error": str(e)}
     except Exception as e:  # never let the helper die without reporting
-        log.exception("Elevated helper failed")
-        result = {"ok": False, "error": f"Unexpected failure: {e}"}
+        # No log to fall back on, so the exception's class travels with the
+        # message — it is all a bug report will have.
+        result = {"ok": False,
+                  "error": f"Unexpected failure: {type(e).__name__}: {e}"}
     try:
         Path(path).write_text(json.dumps(result), encoding="utf-8")
     except OSError:

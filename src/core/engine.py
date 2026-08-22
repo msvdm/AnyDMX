@@ -10,9 +10,6 @@ import time
 
 from src.core.artnet_receiver import ArtNetReceiver
 from src.core.dmx_output import DmxOutput, DMX_CHANNELS
-from src.utils.logger import get_logger
-
-log = get_logger(__name__)
 
 ARTNET_ACTIVE_TIMEOUT = 2.0  # seconds without a packet before "no signal"
 # The GUI polls every 100 ms, which is far too short a window to measure a
@@ -81,8 +78,6 @@ class Engine:
         if self._output:
             self._output.start()
         self.running = True
-        log.info("Engine started: universe %d -> %s",
-                 universe, com_port or "(monitor mode, no DMX output)")
 
     def stop(self):
         if self._receiver:
@@ -93,7 +88,6 @@ class Engine:
             self._output = None
         self.running = False
         self._reset_rates()
-        log.info("Engine stopped")
 
     def _reset_rates(self):
         self._packet_rate.reset()

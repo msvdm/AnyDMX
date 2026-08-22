@@ -15,10 +15,6 @@ import time
 
 import serial
 
-from src.utils.logger import get_logger
-
-log = get_logger(__name__)
-
 DMX_BAUD = 250000
 DMX_CHANNELS = 512
 RECONNECT_DELAY = 1.0
@@ -48,10 +44,6 @@ class DmxOutput:
         self._port_name = port_name
         self._get_frame = get_frame
         self._period = max(1.0 / fps, MIN_FRAME_PERIOD)
-        if self._period > 1.0 / fps:
-            log.info("Requested %d fps is faster than a 512-channel frame can "
-                     "leave the wire — pacing at %.1f fps instead",
-                     fps, 1.0 / self._period)
         self._ser = None
         self._thread = None
         self._running = False
@@ -65,7 +57,6 @@ class DmxOutput:
         self._thread = threading.Thread(target=self._loop, name="DmxOutput",
                                         daemon=True)
         self._thread.start()
-        log.info("DMX output starting on %s", self._port_name)
 
     def stop(self):
         self._running = False
@@ -73,7 +64,6 @@ class DmxOutput:
             self._thread.join(timeout=3)
             self._thread = None
         self._close()
-        log.info("DMX output stopped")
 
     def _loop(self):
         while self._running:
@@ -87,8 +77,6 @@ class DmxOutput:
             except (serial.SerialException, OSError) as e:
                 self.connected = False
                 self.last_error = str(e)
-                log.warning("DMX serial error on %s: %s — reconnecting",
-                            self._port_name, e)
                 self._close()
                 continue
             remaining = self._period - (time.monotonic() - frame_start)
@@ -112,7 +100,6 @@ class DmxOutput:
             return False
         self.connected = True
         self.last_error = None
-        log.info("Serial port %s opened at %d baud", self._port_name, DMX_BAUD)
         return True
 
     def _close(self):

@@ -1,11 +1,8 @@
-"""JSON settings persistence (settings/settings.json)."""
+"""JSON settings persistence: settings.json, beside the app."""
 
 import json
 
-from src.utils.logger import get_logger
-from src.utils.paths import settings_dir
-
-log = get_logger(__name__)
+from src.utils.paths import app_dir
 
 DEFAULTS = {
     "com_port": "",
@@ -23,7 +20,7 @@ DEFAULTS = {
 
 
 def _settings_file():
-    return settings_dir() / "settings.json"
+    return app_dir() / "settings.json"
 
 
 def load_settings():
@@ -37,17 +34,23 @@ def load_settings():
                     data[key] = stored[key]
     except FileNotFoundError:
         pass
-    except (json.JSONDecodeError, OSError) as e:
-        log.warning("Could not load settings (%s) — using defaults", e)
+    except (json.JSONDecodeError, OSError):
+        pass  # unreadable or nowhere to read from: the defaults still work
     return data
 
 
 def save_settings(data):
-    path = _settings_file()
-    tmp = path.with_suffix(".json.tmp")
+    """Persist the settings, or skip if there is nowhere to write them.
+
+    A read-only location — a write-protected stick, Program Files — must
+    cost the session its persistence and nothing else. This is called from GUI
+    callbacks, where an OSError would take the window down.
+    """
     try:
+        path = _settings_file()
+        tmp = path.with_suffix(".json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         tmp.replace(path)
-    except OSError as e:
-        log.warning("Could not save settings: %s", e)
+    except OSError:
+        pass

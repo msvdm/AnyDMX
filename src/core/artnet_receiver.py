@@ -24,10 +24,6 @@ import threading
 import time
 import uuid
 
-from src.utils.logger import get_logger
-
-log = get_logger(__name__)
-
 ARTNET_PORT = 6454
 ARTNET_HEADER = b"Art-Net\x00"
 OP_POLL = 0x2000
@@ -194,11 +190,6 @@ class ArtNetReceiver:
         self._thread = threading.Thread(target=self._loop, name="ArtNetReceiver",
                                         daemon=True)
         self._thread.start()
-        log.info("Art-Net receiver listening on %s:%d (universe %d), "
-                 "advertising as %s",
-                 ", ".join(self._labels[s.fileno()] for s in self._socks),
-                 ARTNET_PORT,
-                 self.universe, self._advertise_ip)
 
     def stop(self):
         self._running = False
@@ -213,7 +204,6 @@ class ArtNetReceiver:
         self._socks = []
         self._labels = {}  # fileno -> bound address
         self._announce_sock = None
-        log.info("Art-Net receiver stopped")
 
     def _bind_sockets(self):
         """One socket per address we want to be reachable at.
@@ -232,7 +222,6 @@ class ArtNetReceiver:
             except OSError as e:
                 sock.close()
                 errors.append(f"{addr}: {e}")
-                log.warning("Could not bind %s:%d — %s", addr, ARTNET_PORT, e)
                 continue
             sock.settimeout(0.5)
             labels[sock.fileno()] = addr
@@ -356,18 +345,16 @@ class ArtNetReceiver:
         reply = build_poll_reply(self._local_ip_for(addr[0]), self.universe)
         try:
             self._announce_sock.sendto(reply, (addr[0], ARTNET_PORT))
-            log.debug("ArtPollReply sent to %s", addr[0])
-        except OSError as e:
-            log.warning("Failed to send ArtPollReply to %s: %s", addr[0], e)
+        except OSError:
+            pass  # best-effort: capture never depends on the reply
 
     def _announce(self):
         """Broadcast an unsolicited ArtPollReply (spec: on start + periodically)."""
         reply = build_poll_reply(self._advertise_ip, self.universe)
         try:
             self._announce_sock.sendto(reply, (BROADCAST_ADDR, ARTNET_PORT))
-            log.debug("ArtPollReply broadcast as %s", self._advertise_ip)
-        except OSError as e:
-            log.warning("Failed to broadcast ArtPollReply: %s", e)
+        except OSError:
+            pass  # best-effort: capture never depends on announcing
 
     def _pick_advertise_ip(self):
         """IP to put in announce packets: the bound NIC, else the outbound one.

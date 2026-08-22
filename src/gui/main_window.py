@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from src.core import vnet
 from src.core.artnet_receiver import list_local_ipv4
 from src.core.engine import Engine
 from src.core.ports import list_serial_ports
@@ -33,10 +32,7 @@ from src.gui.styles import COLORS
 from src.gui.title_bar import TitleBar, TitleRule
 from src.gui.universe_bar import UniverseBar
 from src.gui.vnet_dialog import InterfaceDialog
-from src.utils.logger import get_logger
 from src.utils.settings import load_settings, save_settings
-
-log = get_logger(__name__)
 
 POLL_MS = 100        # GUI refresh interval
 # Startup size: the compact layout's own floor, so the window opens as small as
@@ -417,9 +413,6 @@ class MainWindow(FramelessWindow):
         even true: every change in that window now raises its own permission
         prompt when it is applied.
         """
-        # The one fact a bug report about this window always needs, and the
-        # one the user cannot check for themselves.
-        log.info("Interface setup opened (administrator=%s)", vnet.is_admin())
         dialog = InterfaceDialog(self.settings, self)
         dialog.exec()
         self._refresh_nics()
@@ -463,7 +456,6 @@ class MainWindow(FramelessWindow):
             # Not fatal and not worth a modal on every combo change: the bottom
             # line says what happened and ⟳ tries again.
             self._start_error = str(e)
-            log.warning("Could not start the bridge: %s", e)
             self._set_led(self.artnet_led, "err")
             self._set_led(self.dmx_led, "off")
             self.artnet_state.setText("blocked")
