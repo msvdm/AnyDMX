@@ -83,7 +83,17 @@ install, no Python needed — it is one file.
 | System | File | How to run it |
 |---|---|---|
 | Windows 10/11 (64-bit) | `AnyDMX-*-windows-x64.exe` | Double-click it |
-| Linux (64-bit, glibc 2.35+) | `AnyDMX-*-linux-x64` | `chmod +x` it, then run it |
+| Mint / Ubuntu / Debian | `anydmx_*_amd64.deb` | Double-click to install, then find it in your menu |
+| Any other 64-bit Linux (glibc 2.35+) | `AnyDMX-*-linux-x64` | `chmod +x` it, then run it |
+
+**On Mint, Ubuntu or Debian, take the `.deb`.** Anything downloaded through a
+browser arrives without permission to run — HTTP has no way to carry that bit,
+and browsers deliberately will not add it, or every download would be one
+double-click from executing. So the bare binary always costs you a `chmod +x`
+first. The package skips it, adds AnyDMX to your applications menu with its
+icon, and puts your settings in `~/.config/AnyDMX` rather than next to the
+file. (This is also why an AppImage would not help — those need `chmod +x`
+too.)
 
 **Windows will warn you the first time.** The file is not signed — a
 code-signing certificate costs more per year than this project costs to run —

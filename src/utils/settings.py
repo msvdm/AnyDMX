@@ -48,6 +48,9 @@ def save_settings(data):
     """
     try:
         path = _settings_file()
+        # The per-user config directory may not exist yet on a first run of
+        # an installed copy.
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)

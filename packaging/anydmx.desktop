@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=AnyDMX
+GenericName=Art-Net to DMX bridge
+Comment=Capture Art-Net from a lighting console and send DMX512 out a USB dongle
+Exec=anydmx
+Icon=anydmx
+Terminal=false
+Categories=AudioVideo;
+Keywords=DMX;DMX512;ArtNet;Art-Net;lighting;console;stage;
+StartupWMClass=AnyDMX

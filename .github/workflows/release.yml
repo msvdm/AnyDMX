@@ -127,6 +127,22 @@ jobs:
           cp "dist/${{ matrix.artifact }}" "out/$NAME"
           ls -la out/
 
+      # A downloaded binary arrives without its executable bit — HTTP cannot
+      # carry one and browsers will not add one — so the bare file always costs
+      # the user a chmod before it will start. The package removes that step,
+      # and puts AnyDMX in the applications menu with its icon while it is
+      # there. The bare binary stays for distributions this does not fit.
+      - name: Package as a .deb
+        if: runner.os == 'Linux'
+        run: packaging/build-deb.sh "${GITHUB_REF_NAME#v}" dist/AnyDMX out
+
+      - name: Check the package is well formed
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y desktop-file-utils
+          desktop-file-validate packaging/anydmx.desktop
+          dpkg-deb --info out/*.deb
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}
@@ -161,7 +177,15 @@ jobs:
           | System | File | How to run it |
           |---|---|---|
           | Windows 10/11 (64-bit) | `AnyDMX-*-windows-x64.exe` | Double-click it |
-          | Linux (64-bit, glibc 2.35+) | `AnyDMX-*-linux-x64` | `chmod +x AnyDMX-*-linux-x64` then run it |
+          | Mint / Ubuntu / Debian | `anydmx_*_amd64.deb` | Double-click to install, then find AnyDMX in your menu |
+          | Any other 64-bit Linux | `AnyDMX-*-linux-x64` | `chmod +x` it first, then run it |
+
+          On Debian-family Linux take the `.deb`. A file downloaded through a
+          browser arrives without permission to run — HTTP cannot carry that
+          bit and browsers will not add it — so the bare binary always needs a
+          `chmod +x` first. The package skips all of that, puts AnyDMX in your
+          applications menu with its icon, and keeps your settings in
+          `~/.config/AnyDMX` instead of beside the file.
 
           ### Windows will warn you about this file
 

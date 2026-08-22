@@ -115,7 +115,10 @@ vnet_dialog ──→ vnet.py ──┬── vnet_windows.py  SetupAPI + PowerS
 | `src/gui/channel_view.py` | Live 512-channel grid (32×16) |
 | `src/gui/styles.py` | Color palette + QSS |
 | `src/utils/paths.py` | Portable paths (source run vs PyInstaller exe) |
-| `assets/AnyDMX.ico` | App icon (multi-size) — nothing imports it yet; it is waiting for the build |
+| `assets/AnyDMX.ico` | App icon, embedded in the Windows exe by `AnyDMX.spec` |
+| `assets/AnyDMX.png` | The same icon Qt shows at runtime, and what the .deb installs |
+| `AnyDMX.spec` | PyInstaller recipe: one file per platform, no installer |
+| `packaging/build-deb.sh` | Wraps the Linux binary in a .deb — menu entry, icon, launcher |
 | `tools/artnet_sniff.py` | Diagnostic: what is actually on the wire (Art-Net + sACN) |
 | `tools/artnet_test_sender.py` | Hardware-free test: animated ArtDMX to localhost |
 
@@ -430,6 +433,18 @@ suite on each, and publishes them. `AnyDMX.spec` is the build recipe.
   "did it exit" check
 - Nothing is code-signed. Say so in the release notes rather than letting a
   user meet SmartScreen with no warning
+- **A downloaded binary can never arrive executable.** HTTP cannot carry the
+  permission bit and browsers deliberately refuse to add one, so a bare binary
+  always costs a `chmod +x` before it will start — an AppImage included. That
+  is what the `.deb` exists to remove, along with putting AnyDMX in the
+  applications menu. Do not "fix" the bare binary; there is nothing to fix
+- **Settings follow the install shape, not a fixed path.** `app_dir()` prefers
+  the directory beside the executable so a portable copy on a stick carries its
+  settings with it, and falls back to `user_config_dir()` when that is not
+  writable — which is exactly the installed case, where `/usr/lib/anydmx` is
+  not the user's to write to. Without the fallback an installed AnyDMX forgets
+  every setting silently, because `save_settings()` treats an unwritable
+  location as losing persistence and nothing else
 
 ## Verified on real hardware
 

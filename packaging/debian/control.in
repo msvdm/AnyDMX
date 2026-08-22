@@ -1,0 +1,24 @@
+Package: anydmx
+Version: @VERSION@
+Section: sound
+Priority: optional
+Architecture: amd64
+Maintainer: Marian Raynov <marian.raynov@gmail.com>
+Homepage: https://github.com/msvdm/AnyDMX
+Depends: libc6 (>= 2.35), libegl1, libgl1, libxkbcommon-x11-0, libxcb-cursor0,
+ libxcb-icccm4, libxcb-keysyms1, libxcb-shape0, libxcb-xinerama0,
+ libfontconfig1, libfreetype6, libdbus-1-3
+Recommends: network-manager
+Description: Art-Net to DMX512 bridge for USB dongles
+ AnyDMX captures Art-Net sent by any lighting application on this PC and
+ re-emits it as DMX512 out a USB-RS485 dongle, replacing a chain of loopback
+ adapter plus third-party bridge with a single window.
+ .
+ It shows what it is actually receiving — which universes are on the wire,
+ from which source, at what rate — because when the rig is dark the first
+ question is never whether the bridge is configured right, it is whether the
+ console is sending anything at all.
+ .
+ Capturing Art-Net and driving DMX need no special privileges. Creating the
+ dedicated lighting interface asks NetworkManager, which raises its own
+ password prompt at the moment it is applied.
