@@ -1,28 +1,35 @@
-"""Interface setup: every network adapter on this PC, and the AnyDMX one.
+"""Interface setup: every network interface on this PC, and the AnyDMX one.
 
 Two jobs in one window, in the order a user meets them. The top half is a
-nicer front end for the Windows network settings — the list of adapters, and
-one editor for whichever is selected. The bottom half creates and removes the
-virtual AnyDMX adapter, which is the part no OS dialog can do.
+nicer front end for the system's network settings — the list of interfaces,
+and one editor for whichever is selected. The bottom half creates and removes
+the virtual AnyDMX interface, which is the part no OS dialog can do.
+
+Nothing in here is platform-specific. Every query and every change goes
+through src/core/vnet.py, which answers from whichever backend fits the
+machine — SetupAPI and PowerShell on Windows, NetworkManager on Linux. Where
+the two genuinely differ, the backend says so and this window adapts: the
+sentence naming the coming permission prompt comes from permission_notice(),
+and the Name field is only editable where SUPPORTED_OPS contains "rename".
+Do not reintroduce an OS name into this file.
 
 There is deliberately no explanatory prose in here. It used to open with a
 six-line paragraph that took nearly half the height and left room for one
 address field; that text now lives in the README, where it can be read once
-rather than stared past every time. The labels are the same nouns Windows
+rather than stared past every time. The labels are the same nouns the system
 uses, and the layout is the explanation.
 
 Administrator rights are never demanded up front. Opening this window asks
 for nothing, and how AnyDMX was launched changes nothing about what can be
-done here: every button that changes something raises the Windows permission
-prompt at the moment it is pressed, through a short-lived elevated helper,
-and does nothing else if it is declined. Started elevated, the prompts do not
-appear and the window says nothing about rights at all.
+done here: every button that changes something raises the system's permission
+prompt at the moment it is pressed, and does nothing else if it is declined.
+Started elevated, the prompts do not appear and the window says nothing about
+rights at all.
 
-Every adapter operation shells out — to PowerShell for the queries, to the
-elevated helper for the changes — so this dialog is only ever
-opened on demand. Nothing here runs from the main window's 100 ms poll, and
-the receiver and output threads are untouched while it works, so DMX keeps
-streaming the whole time.
+Every interface operation shells out, so this dialog is only ever opened on
+demand. Nothing here runs from the main window's 100 ms poll, and the receiver
+and output threads are untouched while it works, so DMX keeps streaming the
+whole time.
 """
 
 from PySide6.QtCore import Qt, QTimer
@@ -170,7 +177,7 @@ class InterfaceDialog(QDialog):
         self._selected = None
         self._busy = False
         # Not a permission gate any more, only a question of whether a
-        # Windows prompt will appear when a change is applied.
+        # permission prompt will appear when a change is applied.
         self._elevated = vnet.is_admin()
         self._build_ui()
         # Paint first, query after. The enumeration takes over a second, and
@@ -384,17 +391,16 @@ class InterfaceDialog(QDialog):
         return row
 
     def _permission_hint(self, what):
-        """A button's tooltip, with the Windows prompt named when there is one.
+        """A button's tooltip, naming the coming prompt when there is one.
 
-        Elevated, the second sentence would be a lie and is left off — the
-        rule for this window is that it says nothing about rights when there
-        is nothing to say.
+        The sentence comes from the backend, because the two platforms raise
+        different prompts — UAC on Windows, polkit on Linux — and neither name
+        means anything on the other. When there is no prompt coming the
+        backend returns None and this adds nothing: the rule for this window
+        is that it says nothing about rights when there is nothing to say.
         """
-        if self._elevated:
-            return what
-        return (f"{what}\n"
-                "Windows will ask for permission for this one step; "
-                "AnyDMX does not need to be restarted.")
+        notice = vnet.permission_notice()
+        return f"{what}\n{notice}" if notice else what
 
     @staticmethod
     def _caption(text):
@@ -481,9 +487,21 @@ class InterfaceDialog(QDialog):
             self.ident.setText(line)
             self.ident.setToolTip(line)
 
-        for widget in (self.name_edit, self.mode_combo, self.preset_btn,
+        for widget in (self.mode_combo, self.preset_btn,
                        self.apply_btn, self.toggle_btn, self.revert_btn):
             widget.setEnabled(editable)
+        # Renaming is a Windows capability. On Linux a persistent rename means
+        # a udev rule, so the backend does not offer it and the field is shown
+        # filled but inert — the name is still what identifies the row. A
+        # greyed field with no reason reads as a broken window, so it carries
+        # its own.
+        can_rename = "rename" in vnet.SUPPORTED_OPS
+        self.name_edit.setEnabled(editable and can_rename)
+        self.name_edit.setToolTip("" if can_rename else
+                                  "Renaming an interface is not something "
+                                  "AnyDMX does on this system — it would mean "
+                                  "a permanent system-wide rule, not a "
+                                  "setting.")
         self._addressing_changed()
 
     def _addressing_changed(self):
@@ -497,8 +515,9 @@ class InterfaceDialog(QDialog):
         """Why the address fields are grey — now the only reason left.
 
         A greyed field with no reason beside it reads as a broken window.
-        Windows greys the same three in its own dialog until you pick Manual;
-        the difference is that it says so.
+        Every OS greys the same three in its own dialog until you pick a
+        manual address; the difference is that this one says so. (The Name
+        field greys for its own reason, and carries its own tooltip.)
         """
         if self._selected and self.mode_combo.currentIndex() == 0:
             self.editor_note.setText(
@@ -578,7 +597,7 @@ class InterfaceDialog(QDialog):
         """Ask before anything that could take the machine off the network.
 
         Never refuse outright — a user with two NICs legitimately disables
-        one, and blocking that would send them straight back to the Windows
+        one, and blocking that would send them straight back to the system
         dialog this exists to replace. Cancel is the default button.
         """
         kinds = {o["op"] for o in ops}
@@ -699,8 +718,8 @@ class InterfaceDialog(QDialog):
         """
         if self._busy:
             return
-        if not vnet.is_admin():
-            busy_text += "  — approve the Windows permission prompt"
+        if vnet.permission_notice():
+            busy_text += "  — approve the permission prompt"
         self._busy = True
         self._say("", busy_text)
         QApplication.setOverrideCursor(Qt.WaitCursor)

@@ -16,8 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.core import vnet
-from src.core.vnet import VNetError
+from src.core import vnet_windows as vnet
+from src.core.vnet_common import VNetError
 
 
 class FakeProc:

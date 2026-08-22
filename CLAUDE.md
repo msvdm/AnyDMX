@@ -44,13 +44,53 @@ ArtNetReceiver ──┐                       ┌── DmxOutput (USB serial)
 - Receivers and outputs each run their own daemon thread and must survive
   I/O errors by reconnecting, not by raising
 
+## The second seam: `vnet` — one contract, one backend per platform
+
+The same idea as the universe buffer, applied to the one part of the app that
+genuinely cannot be written once. `src/gui/vnet_dialog.py` names capabilities,
+never platforms, and does not know which backend answered:
+
+```
+vnet_dialog ──→ vnet.py ──┬── vnet_windows.py  SetupAPI + PowerShell, UAC
+   (no OS names)          ├── vnet_linux.py    NetworkManager, polkit
+                          └── vnet_unsupported.py  a sentence, not a crash
+```
+
+- The contract is listed in `vnet.py`'s docstring and enforced by
+  `tests/test_vnet_facade.py`. A backend that grows or loses a name should
+  fail there first, not as a dead control in the dialog
+- Where the platforms genuinely differ, **the backend says so and the GUI
+  adapts**: `permission_notice()` supplies the sentence naming the coming
+  prompt (UAC and polkit are different things and neither name means anything
+  on the other), and `SUPPORTED_OPS` says which changes exist at all. Never
+  put an OS name back into `src/gui/`
+- **The two backends are shaped differently on purpose.** Windows has to build
+  and defend its own privilege boundary — request file, elevated helper,
+  re-validation on the far side. Linux has none of that, because
+  NetworkManager already owns the boundary: polkit raises the prompt, NM
+  validates the request, and nmcli runs unprivileged on this side of it. The
+  most security-sensitive machinery in this app therefore has exactly one
+  implementation to keep correct. **Do not add a helper to the Linux side** —
+  if something there needs root, ask NetworkManager for it
+- Linux uses NetworkManager rather than the far simpler `ip addr add` for one
+  reason: the interface must survive a reboot. `ip addr add` does not, which
+  would make the Linux adapter a different and worse thing wearing the same
+  name
+- Linux deliberately cannot rename an interface. A persistent rename means a
+  udev rule — a system-wide change of a different character from "give this
+  NIC an address" — so `SUPPORTED_OPS` omits it and the Name field is inert,
+  carrying its own tooltip. A greyed control with no reason reads as a broken
+  window
+
 ## Tech Stack
 
 - **Python + PySide6** — GUI
 - **pyserial** — DMX output (Open DMX technique: 250000 baud 8N2, break + start code + 512 bytes @ ~34 fps)
 - **stdlib socket** — Art-Net UDP (port 6454), no external protocol library
-- **ctypes + PowerShell** — virtual network adapter. Nothing bundled: the
-  loopback driver is in-box and SetupAPI is called directly.
+- **ctypes + PowerShell** — virtual network adapter on Windows. Nothing
+  bundled: the loopback driver is in-box and SetupAPI is called directly.
+- **nmcli** — the same job on Linux, through NetworkManager. Nothing bundled
+  there either.
 
 ## Key Files
 
@@ -61,7 +101,11 @@ ArtNetReceiver ──┐                       ┌── DmxOutput (USB serial)
 | `src/core/dmx_output.py` | Serial DMX sender thread, auto-reconnect |
 | `src/core/engine.py` | Universe buffer + status snapshots + `RateMeter`; wires receiver → output |
 | `src/core/ports.py` | COM port enumeration + chip ID (FTDI/CH340/CP210x/Prolific) |
-| `src/core/vnet.py` | Virtual "AnyDMX" lighting adapter: create/remove, UAC elevation |
+| `src/core/vnet.py` | The interface seam: picks a backend per platform, re-exports one contract |
+| `src/core/vnet_common.py` | Constants, `VNetError`, and the validators every backend shares |
+| `src/core/vnet_windows.py` | Windows backend: SetupAPI + PowerShell, UAC elevation |
+| `src/core/vnet_linux.py` | Linux backend: NetworkManager via nmcli, polkit elevation |
+| `src/core/vnet_unsupported.py` | Every other platform: a clear refusal, never a crash |
 | `src/gui/main_window.py` | Single-window GUI: input panel, output panel, 100 ms status polling |
 | `src/gui/frameless.py` | `FramelessWindow`: move/resize/clamp — everything the decorations used to do |
 | `src/gui/title_bar.py` | The window's own title bar (the window is frameless) |
@@ -182,10 +226,69 @@ from worker threads.
   `c_ulong`/`c_long`, which are 32-bit only under Windows' LLP64 model — on an
   LP64 host they widen to 64 bits and every SetupAPI struct is laid out wrong
   (`_SP_DEVINFO_DATA` came out 48 bytes instead of 32, and the layout test that
-  caught it was simply left failing). `vnet.py` therefore spells the scalars as
+  caught it was simply left failing). `vnet_windows.py` therefore spells the
+  scalars as
   fixed widths (`c_uint32`, `c_uint16`) and the structs are correct on any host.
   Do not "simplify" them back to `wintypes`; handle and string types are
   pointer-sized everywhere and are the only ones that still come from there.
+
+## Linux facts — measured on Linux Mint 22.3, do not re-litigate
+
+- **Linux delivers unicast to the single most specific socket, exactly as
+  Windows does.** Measured with four sockets on one port: a datagram to
+  `192.168.100.126` reached only the socket bound to that address, never the
+  wildcard one. So the per-NIC bind in `ArtNetReceiver` is load-bearing here
+  too, for the same reason — without it another Art-Net app that binds the
+  NIC first silently steals unicast. Binding several addresses on one port
+  needs only `SO_REUSEADDR`; `SO_REUSEPORT` is not required.
+- **`getaddrinfo(gethostname())` is worthless on Linux.** Debian and Ubuntu
+  map the hostname to `127.0.1.1` in `/etc/hosts`, so `list_local_ipv4()`
+  returned exactly `['127.0.1.1']` on this machine and the real NIC was
+  invisible — no per-NIC bind, and nothing but a dead address in the GUI's
+  interface selector. The Linux path parses `ip -4 -o addr show` instead, and
+  loopback is filtered out on **both** platforms: `_bind_addresses()` adds
+  `127.0.0.1` itself, deliberately and separately.
+- **`netstat -ano -p UDP` is a Windows command line.** On Linux `-p` means
+  "program", so `port_owner()` silently matched nothing and the "name the
+  process holding 6454" diagnostic — the whole point of that function — was
+  dead. Linux uses `ss -lunp`, which only names processes owned by the current
+  user; a port held by another user is still reported as held, because silence
+  is the bug the function exists to prevent.
+- **Linux creates `/dev/ttyS0` through `/dev/ttyS31` whether or not the UARTs
+  exist.** Thirty-two phantom ports burying the one USB dongle, and the first
+  of them is what an empty setting selects — so the app reported a permission
+  error about a port that was never there. pyserial marks them `hwid 'n/a'`
+  with no VID; `ports.has_hardware()` filters on exactly that, and only on
+  Linux (Windows enumerates a COM port only when a device is behind it).
+- **`/dev/ttyUSB*` is `root:dialout`.** A user who has never needed a serial
+  port is not in that group, so the first run with a real dongle fails with a
+  bare `[Errno 13] Permission denied`. `dmx_output.explain_open_error()` turns
+  that into the sentence that fixes it. This is the most likely first-run
+  failure on Linux, and it is the one the status line must not leave bare.
+- **nmcli's `device show` output is `KEY:VALUE` with raw colons in the value.**
+  MAC addresses and IPv6 addresses are made of colons, so it splits on the
+  first one only. (nmcli's *multi-column* terse mode is the one that escapes
+  `:` as `\:` — a different format with a different rule. Treating them the
+  same shreds every MAC in the list.) This is the Linux twin of the
+  `ConvertTo-Json -Depth 2` trap above.
+- **`GENERAL.IS-SOFTWARE` says `yes` for a dummy device**, which would file the
+  AnyDMX interface away as scenery. It counts as *physical* on purpose — the
+  exact echo of the KM-TEST loopback counting as physical on Windows, and for
+  the same reason: it is a real device with a real address that must be
+  editable beside the real NICs. `test_the_anydmx_dummy_counts_as_physical`
+  exists to stop the "fix".
+- **A dummy device's driver string is literally `dummy`.** It has no vendor
+  and no product, so a description that falls through to `GENERAL.DRIVER`
+  shows the kernel's word for the mechanism as the identity of the lighting
+  interface — it reads like an unfinished placeholder and says nothing about
+  what the user is looking at. `_description()` names it "AnyDMX lighting
+  interface" instead. The device, the connection and the label all say AnyDMX;
+  only NetworkManager's own settings UI still calls the *type* Dummy, and that
+  is not ours to rename.
+- Still unmeasured, and worth writing down when it is: whether Linux loops a
+  locally-sent broadcast back to other local sockets across a dummy interface,
+  the way Windows does across the loopback adapter. Capture from a lighting
+  app on the same PC depends on it.
 
 ## Invariants — do not break
 
@@ -218,33 +321,43 @@ from worker threads.
 - The receiver counts **every** universe seen, not only the selected one — the
   GUI must be able to say "the console is sending universe 5", never just
   "no data"
-- Capturing Art-Net and driving DMX **never** require administrator rights.
-  Every operation that does — creating the adapter, removing it, changing an
-  existing interface — goes through the short-lived elevated helper and asks
-  Windows at the moment it is applied
+- Capturing Art-Net and driving DMX **never** require administrator or root
+  rights. Every operation that does — creating the interface, removing it,
+  changing an existing one — asks the OS at the moment it is applied: the
+  short-lived elevated helper on Windows, polkit through NetworkManager on
+  Linux
 - **How AnyDMX was launched must never decide what Interface Setup can do.**
   There is no read-only mode. The editor was gated on `is_admin()` once and it
   was the wrong trade twice over: pinning a static address on a real NIC is
   the setup step a lighting network needs most often, and the greyed fields
   were indistinguishable from the ones DHCP greys out, so an elevated user
   reading "read-only" concluded the detection was broken. `request_apply()`
-  is the rule now, alongside `request_create()`/`request_remove()`: elevated,
-  act directly; unelevated, hand it to the helper. `apply_adapter()` keeps its
-  own `is_admin()` guard as the last line, not as the policy
+  is the rule now, alongside `request_create()`/`request_remove()`: on Windows,
+  elevated act directly, unelevated hand it to the helper; on Linux, call
+  nmcli and let polkit ask. `apply_adapter()` keeps its own `is_admin()` guard
+  as the last line, not as the policy
 - **Rights are reported where they bite, never announced up front.** Opening
-  the window asks for nothing and pops nothing. Elevated, it says nothing
-  about rights at all — no prompt is coming, so promising one is a lie. The
-  only notice left in the editor's button row is DHCP's, and it names the
-  control that fixes it
-- Validate a change **before** raising the prompt, and again inside the
-  helper. A permission dialog raised over a request that cannot succeed is a
-  dialog the user learns to click through
-- `vnet` helper input is **untrusted**: the request file is writable by the
-  unelevated user, so the elevated helper re-validates the action, the index,
-  every op, the address, the prefix, and the adapter name before acting — and
-  `apply_adapter` refuses outright if the interface's live name is not the one
-  the request claims. The helper knows exactly three actions; adding a fourth
-  widens the one boundary in this app that an attacker would aim at
+  the window asks for nothing and pops nothing. Elevated or root, it says
+  nothing about rights at all — no prompt is coming, so promising one is a
+  lie. The sentence comes from `permission_notice()`, never from the GUI: UAC
+  and polkit are different things and neither name means anything on the
+  other platform
+- Validate a change **before** raising the prompt, and again on the far side
+  of any privilege boundary. A permission dialog raised over a request that
+  cannot succeed is a dialog the user learns to click through
+- `vnet` helper input is **untrusted** (Windows): the request file is writable
+  by the unelevated user, so the elevated helper re-validates the action, the
+  index, every op, the address, the prefix, and the adapter name before acting
+  — and `apply_adapter` refuses outright if the interface's live name is not
+  the one the request claims. The helper knows exactly three actions; adding a
+  fourth widens the one boundary in this app that an attacker would aim at.
+  Linux has no second copy of this because it has no helper — see the seam
+  section — and it must stay that way
+- **Nothing in `src/gui/` names an operating system.** What differs between
+  platforms is asked of the backend: `permission_notice()` for the prompt
+  sentence, `SUPPORTED_OPS` for which changes exist. A dead control must still
+  carry its own reason — a greyed field with no explanation reads as a broken
+  window, which is the rule the Name field's tooltip on Linux exists to keep
 
 ## Never hide a simulator
 
@@ -264,6 +377,21 @@ After any code change in `src/`, run the full suite before considering the task
 done. Hardware tests use mocks — no real COM port, network, or adapter is ever
 touched. **Keep it that way.**
 
+The same suite runs on Windows and Linux in CI (`.github/workflows/ci.yml`) on
+every push and pull request, because this app is written on Linux and used on
+Windows and neither machine notices when a change breaks the other. Two rules
+follow:
+
+- **A test must not depend on the host it runs on.** Anything that reads the
+  platform — `list_local_ipv4`, `port_owner`, `ports.list_serial_ports`, every
+  `vnet` backend, and the dialog's `SUPPORTED_OPS`/`permission_notice` — is
+  monkeypatched to a fixed answer, never left to ask the machine. A test that
+  passes on Linux and fails on Windows for that reason is the failure mode this
+  matrix exists to catch, not to create.
+- CI proves the code is correct and imports cleanly. It has no dongle, no
+  console and no lighting network, so it can never prove DMX reached a fixture.
+  Do not let a green tick be reported as hardware verification.
+
 ## Run / Build
 
 ```
@@ -272,18 +400,34 @@ python tools/artnet_sniff.py            # what is actually on the wire
 python tools/artnet_test_sender.py      # feed test pattern to localhost
 ```
 
-PyInstaller build: deferred until after POC hardware verification.
+PyInstaller build: deferred until after POC hardware verification. It has to
+run on the target OS — PyInstaller cannot cross-compile — so a release workflow
+means one job per platform, and there is no point automating it before it works
+by hand on Windows.
 
 ## Verified on real hardware
 
-The whole chain works end to end: `vnet.py` creates the adapter on real
-Windows, dot2 picks it up and transmits, Art-Net is captured, and DMX drives
-real fixtures. The frame-timing fix above was confirmed by the symptom it was
-built for disappearing — fixtures no longer twitch in unison, and the cadence
-holds steady at 33-35 fps.
+**Windows — the whole chain, end to end.** `vnet_windows.py` creates the
+adapter on real Windows, dot2 picks it up and transmits, Art-Net is captured,
+and DMX drives real fixtures. The frame-timing fix above was confirmed by the
+symptom it was built for disappearing — fixtures no longer twitch in unison,
+and the cadence holds steady at 33-35 fps.
 
-Still unproven: Onyx as a source (it transmits, but its own patch/interface
-setup has not been worked through), and the PyInstaller build.
+**Linux — everything up to the dongle.** On Linux Mint 22.3 (Cinnamon, X11):
+Art-Net captured from the test sender and labelled as a local test sender,
+universe discovery, the real NIC offered in the interface selector, the
+frameless window drawn correctly, and the interface editor listing and reading
+a real NIC through nmcli.
+
+Still unproven: **DMX output on Linux** (no dongle on that machine — the serial
+path is correct code nobody has watched drive a fixture), creating the
+NetworkManager dummy interface against a live polkit prompt, Onyx as a source
+(it transmits, but its own patch/interface setup has not been worked through),
+macOS in any form, and the PyInstaller build.
+
+When any of these is proven, say *which machine and which hardware* — "works on
+Linux" without a dongle behind it is the same kind of claim the hidden test
+sender once made.
 
 ## The repo is public
 

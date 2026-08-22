@@ -10,10 +10,14 @@ input pauses — fixtures need a continuous signal.
 Auto-reconnects if the dongle is unplugged and replugged.
 """
 
+import errno
+import sys
 import threading
 import time
 
 import serial
+
+IS_LINUX = sys.platform.startswith("linux")
 
 DMX_BAUD = 250000
 DMX_CHANNELS = 512
@@ -35,6 +39,26 @@ DRAIN_MARGIN = 0.006
 # Slowest safe cadence: anything faster and the break overruns the frame.
 MIN_FRAME_PERIOD = FRAME_TX_TIME + BREAK_TIME + MAB_TIME + DRAIN_MARGIN
 DRAIN_TIMEOUT = 0.5                           # give up waiting on a wedged port
+
+
+def explain_open_error(port_name, exc):
+    """Turn a failure to open the port into a sentence that fixes it.
+
+    On Linux /dev/ttyUSB* belongs to root:dialout, and a user who has never
+    needed a serial port before is not in that group — so the very first run
+    with a real dongle fails with a bare "[Errno 13] Permission denied" that
+    says nothing about groups. This is the most likely first-run failure on
+    Linux, and the GUI must say what it saw *and* what to do about it.
+
+    pyserial raises SerialException(errno, message), and SerialException
+    subclasses OSError, so the errno survives.
+    """
+    text = str(exc)
+    if IS_LINUX and (getattr(exc, "errno", None) == errno.EACCES
+                     or "Permission denied" in text):
+        return (f"no permission for {port_name} — run: "
+                "sudo usermod -aG dialout $USER, then log out and back in")
+    return text
 
 
 class DmxOutput:
@@ -96,7 +120,7 @@ class DmxOutput:
             )
         except (serial.SerialException, OSError, ValueError) as e:
             self.connected = False
-            self.last_error = str(e)
+            self.last_error = explain_open_error(self._port_name, e)
             return False
         self.connected = True
         self.last_error = None

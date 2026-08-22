@@ -54,11 +54,24 @@ ADAPTERS = [
 ]
 
 
+# The dialog asks the backend what it can do, so these tests must not inherit
+# the host's answer — they run on Windows and Linux in CI, and would otherwise
+# assert different things on each. Pin the full capability set; the one test
+# that cares about a reduced one narrows it itself.
+ALL_OPS = frozenset({"enable", "disable", "rename", "static", "dhcp"})
+
+
 @pytest.fixture(autouse=True)
 def no_powershell(monkeypatch):
-    """Every door out of the dialog into Windows, stopped."""
+    """Every door out of the dialog into the platform, stopped."""
     monkeypatch.setattr(vnet, "list_adapters", lambda: [dict(a) for a in ADAPTERS])
     monkeypatch.setattr(vnet, "is_admin", lambda: True)
+    monkeypatch.setattr(vnet, "SUPPORTED_OPS", ALL_OPS)
+    monkeypatch.setattr(
+        vnet, "permission_notice",
+        lambda: None if vnet.is_admin() else
+        ("The system will ask for permission for this one step; "
+         "AnyDMX does not need to be restarted."))
     monkeypatch.setattr(vnet, "is_remote_session", lambda: False)
     monkeypatch.setattr(vnet, "find_adapter", lambda name=None: None)
     monkeypatch.setattr(vnet, "artnet_range_addresses", lambda: [])
@@ -335,3 +348,60 @@ def test_the_dhcp_hint_is_the_same_unelevated(qt_app, monkeypatch):
     dlg._row_picked(target)
     assert "DHCP" in dlg.editor_note.text()
     assert "administrator" not in dlg.editor_note.text()
+
+
+# --------------------------------------------------- backend capabilities
+
+def test_the_name_field_is_inert_where_the_backend_cannot_rename(qt_app,
+                                                                 monkeypatch):
+    """Linux has no rename, and a dead control must say why it is dead.
+
+    The rest of the editor stays live — losing rename must not cost the
+    address fields, which are the reason anyone opens this window.
+    """
+    monkeypatch.setattr(vnet, "SUPPORTED_OPS",
+                        frozenset({"enable", "disable", "static", "dhcp"}))
+    dlg = build(qt_app)
+    dlg._row_picked(next(b for b in dlg.rows.buttons()
+                         if b.adapter["name"] == "AnyDMX"))
+    assert not dlg.name_edit.isEnabled()
+    assert dlg.name_edit.toolTip()
+    for widget in (dlg.mode_combo, dlg.ip_edit, dlg.prefix_spin, dlg.gw_edit,
+                   dlg.apply_btn, dlg.toggle_btn):
+        assert widget.isEnabled(), widget
+
+
+def test_no_rename_op_is_generated_where_the_backend_cannot_rename(qt_app,
+                                                                   monkeypatch):
+    """The disabled field must not still be producing work for the backend."""
+    monkeypatch.setattr(vnet, "SUPPORTED_OPS",
+                        frozenset({"enable", "disable", "static", "dhcp"}))
+    dlg = build(qt_app)
+    dlg._row_picked(next(b for b in dlg.rows.buttons()
+                         if b.adapter["name"] == "AnyDMX"))
+    assert {o["op"] for o in dlg.pending_ops()} == set()
+
+
+def test_the_prompt_sentence_comes_from_the_backend(qt_app, monkeypatch):
+    """UAC and polkit are different things, and this window names neither.
+
+    A hard-coded "Windows will ask for permission" was the bug here: correct
+    on one platform, a lie on the other. Whatever the backend says is what
+    the buttons say.
+    """
+    monkeypatch.setattr(vnet, "is_admin", lambda: False)
+    monkeypatch.setattr(vnet, "permission_notice",
+                        lambda: "Vogon paperwork will be required.")
+    dlg = build(qt_app)
+    for button in (dlg.apply_btn, dlg.create_btn, dlg.remove_btn):
+        assert "Vogon paperwork will be required." in button.toolTip(), button.text()
+
+
+def test_a_backend_that_prompts_for_nothing_says_nothing(qt_app, monkeypatch):
+    """Root, or elevated: no prompt is coming, so none is promised."""
+    monkeypatch.setattr(vnet, "permission_notice", lambda: None)
+    dlg = build(qt_app)
+    for button in (dlg.apply_btn, dlg.create_btn, dlg.remove_btn):
+        tip = button.toolTip()
+        assert "permission" not in tip.lower(), button.text()
+        assert "password" not in tip.lower(), button.text()

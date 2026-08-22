@@ -76,10 +76,16 @@ is the honest answer, not this one.
 
 ## Requirements
 
-- Windows, Python 3.10+
+- Windows or Linux, Python 3.10+
 - `pip install -r requirements.txt` (PySide6, pyserial)
 - A USB-RS485 / Open DMX-style dongle — FTDI recommended, CH340 usually works.
   Or nothing at all, if you only want to watch.
+
+macOS is not supported. Not because it cannot work — most of the app is
+portable — but because I have no Apple hardware to test on, and I am not
+shipping a build I have never watched drive a light. If you have a Mac and a
+dongle, a pull request is genuinely welcome; see `src/core/vnet_unsupported.py`
+for what an interface backend has to implement.
 
 ## Run
 
@@ -109,14 +115,47 @@ Levels nobody is sending must never look identical to live ones — that reads a
 a bug every time. Traffic from `127.0.0.1` is labelled as a local test sender
 for the same reason.
 
+## On Linux
+
+AnyDMX runs from source on Linux the same way it does on Windows, with two
+differences worth knowing before you start.
+
+**Your user needs permission to open the dongle.** On Debian, Ubuntu, Mint and
+their relatives, `/dev/ttyUSB0` belongs to the `dialout` group, and a user who
+has never needed a serial port is not in it. Once:
+
+```
+sudo usermod -aG dialout $USER
+```
+
+Then log out and back in — a new terminal is not enough, the group is attached
+when you log in. If you skip this, AnyDMX tells you exactly this in its status
+line rather than showing you a bare "Permission denied".
+
+**Interface Setup uses NetworkManager.** Creating the AnyDMX interface makes a
+NetworkManager `dummy` device, which is the closest Linux equivalent of the
+loopback adapter it makes on Windows: a real, named interface holding
+`2.100.100.0/8` that is still there after a reboot. Your desktop asks for your
+password when you apply a change, and nothing else. One thing the Linux side
+deliberately will not do is rename an interface — a permanent rename means a
+udev rule, which is a different kind of change from "give this NIC an address",
+so the Name field is shown but inert.
+
+**How much of this is proven:** Art-Net capture, universe discovery, the
+interface editor and the GUI are verified working on Linux Mint 22.3 (Cinnamon,
+X11). **DMX output over a dongle is not** — I have no dongle attached to that
+machine, so the serial path on Linux is correct code that nobody has watched
+drive a real fixture. If you try it, please tell me what happened either way;
+see [Ideas, problems, contributions](#ideas-problems-contributions).
+
 ## Interface setup
 
 Press **Interface Setup** in the INPUT panel. It does two jobs: it lists every
-network adapter on the PC so you can fix the one that is wrong without going
-into the Windows settings, and it creates the virtual AnyDMX adapter, which
-Windows has no dialog for at all.
+network interface on the PC so you can fix the one that is wrong without going
+into the system network settings, and it creates the virtual AnyDMX interface,
+which no OS has a dialog for at all.
 
-Nobody enjoys the Windows network settings. That is the whole reason this
+Nobody enjoys the network settings on any OS. That is the whole reason this
 exists.
 
 ### The adapter list
@@ -244,12 +283,17 @@ dropdown where only one value looks stable, this is what you were fighting.
 
 ## Status
 
-**Works on real hardware:** the virtual adapter is created on real Windows,
-dot2 picks it up and transmits, Art-Net is captured, and DMX drives real
-fixtures steadily at 33-35 fps.
+**Works on real hardware (Windows):** the virtual adapter is created on real
+Windows, dot2 picks it up and transmits, Art-Net is captured, and DMX drives
+real fixtures steadily at 33-35 fps.
 
-**Not proven yet:** Onyx as a source, ArtPoll discovery on any console, and the
-PyInstaller build — so for now this runs from source.
+**Works on Linux, up to the dongle:** Art-Net capture, universe discovery, the
+NetworkManager interface editor and the GUI are verified on Linux Mint 22.3.
+DMX output over a dongle is untested there — no hardware to hand.
+
+**Not proven yet:** Onyx as a source, ArtPoll discovery on any console, DMX
+output on Linux, macOS in any form, and the PyInstaller build — so for now this
+runs from source.
 
 Things I am interested in, which are not promises: sACN (E1.31) input, several
 universes and outputs at once, sending Art-Net on to ESP32-style nodes, tray
@@ -267,6 +311,13 @@ python -m pytest
 Everything is mocked — no real COM port, network or adapter is touched. If you
 send a patch, please keep it that way: someone with no dongle, no console and
 no admin rights must still get a clean green run.
+
+The same suite runs on Windows and Linux, on every push and pull request
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). The app is written on
+Linux and used on Windows, so neither machine notices on its own when a change
+breaks the other. Worth being clear about what a green tick means: the code is
+correct and imports cleanly. A CI runner has no dongle, no console and no
+lighting network, so it can never tell you that DMX reached a fixture.
 
 ## Ideas, problems, contributions
 

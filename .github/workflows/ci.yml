@@ -1,0 +1,52 @@
+# The test suite, on both platforms AnyDMX claims to support.
+#
+# This exists because the app is developed on Linux and used on Windows, so
+# neither machine notices when a change breaks the other one. Nothing here
+# touches real hardware: there is no dongle, no console, no admin rights and
+# no second machine on the network in a CI runner, and the suite is written
+# so it never wants any of them. A green run proves the code is correct and
+# imports cleanly — it proves nothing about DMX reaching a fixture.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    name: ${{ matrix.os }} · python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # a Windows-only break must not hide a Linux one
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      # PySide6 will not import on a bare Ubuntu runner without these; the
+      # failure is a missing libEGL, which reads like a code error and is not.
+      - name: Install the Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 \
+                                  libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 \
+                                  libxcb-shape0 libxcb-xinerama0
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the test suite
+        env:
+          # No display on a runner. The Qt tests set this themselves; setting
+          # it here covers anything added later that forgets to.
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q

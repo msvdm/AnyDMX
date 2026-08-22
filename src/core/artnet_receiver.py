@@ -6,23 +6,31 @@ The node also broadcasts unsolicited ArtPollReply on start and periodically,
 as the spec requires, so consoles and node scanners list it without polling.
 
 It binds one socket per local IPv4 as well as the wildcard address. Windows
-delivers unicast to the single most specific socket — system-wide, not just
-within this process — so a wildcard-only bind loses unicast Art-Net to any
-other app that bound a specific address first. Binding at both levels means
+and Linux both deliver unicast to the single most specific socket — system-wide,
+not just within this process — so a wildcard-only bind loses unicast Art-Net to
+any other app that bound a specific address first. Binding at both levels means
 nothing can be quietly stolen from us. Broadcast is copied to every matching
 socket, so the duplicate copies are filtered out again in _is_duplicate().
+
+Enumerating the local addresses is the part that is genuinely per-platform:
+the hostname lookup that is right on Windows returns 127.0.1.1 and nothing else
+on Debian-family Linux. See list_local_ipv4().
 
 Every universe seen is counted, not just the selected one, so the GUI can say
 "the console is sending universe 5" instead of "no data for this universe".
 """
 
+import re
 import select
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import uuid
+
+IS_WINDOWS = sys.platform == "win32"
 
 ARTNET_PORT = 6454
 ARTNET_HEADER = b"Art-Net\x00"
@@ -42,21 +50,58 @@ DEDUP_WINDOW = 0.02  # s — one broadcast reaching several of our sockets
 MAC_BYTES = uuid.getnode().to_bytes(6, "big")
 
 
-def list_local_ipv4():
-    """IPv4 addresses of this machine's interfaces (for the GUI NIC selector).
+def _ipv4_from_hostname():
+    """Every IPv4 the hostname resolves to. The right answer on Windows.
 
-    APIPA link-local addresses (169.254.x.x, from adapters that never got a
-    lease) sort last — they route nowhere, so they must not be picked as the
-    advertised node IP while a real network is available.
+    On Linux it is worse than useless: Debian and Ubuntu map the hostname to
+    127.0.1.1 in /etc/hosts, so this returns a loopback address and the real
+    NIC never appears at all. Hence the iproute2 path below.
     """
     try:
         infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
     except OSError:
         return []
+    return [info[4][0] for info in infos]
+
+
+def _ipv4_from_ip_command():
+    """Every IPv4 iproute2 reports. `ip` ships with every modern Linux.
+
+    Lines look like:
+        2: ens2    inet 192.168.100.126/24 brd 192.168.100.255 scope global ens2
+    """
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show"], timeout=5,
+                             capture_output=True, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
     ips = []
-    for info in infos:
-        ip = info[4][0]
-        if ip not in ips:
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[2] == "inet":
+            ips.append(parts[3].split("/")[0])
+    return ips
+
+
+def list_local_ipv4():
+    """IPv4 addresses of this machine's interfaces (for the GUI NIC selector).
+
+    Loopback is excluded on both platforms. _bind_addresses() adds 127.0.0.1
+    deliberately and separately, and 127.0.1.1 — which is what the hostname
+    lookup yields on Linux — is not an interface anyone can send Art-Net to.
+    Offering either one in the interface selector is offering a dead end.
+
+    APIPA link-local addresses (169.254.x.x, from adapters that never got a
+    lease) sort last — they route nowhere, so they must not be picked as the
+    advertised node IP while a real network is available.
+    """
+    if IS_WINDOWS:
+        found = _ipv4_from_hostname()
+    else:
+        found = _ipv4_from_ip_command() or _ipv4_from_hostname()
+    ips = []
+    for ip in found:
+        if ip not in ips and not ip.startswith("127."):
             ips.append(ip)
     ips.sort(key=lambda ip: ip.startswith("169.254."))
     return ips
@@ -69,6 +114,10 @@ def port_owner(port):
     binds it and this one simply never sees traffic. Naming the culprit turns
     a mystery into a one-line fix.
     """
+    return _port_owner_windows(port) if IS_WINDOWS else _port_owner_linux(port)
+
+
+def _port_owner_windows(port):
     try:
         out = subprocess.run(["netstat", "-ano", "-p", "UDP"], timeout=5,
                              capture_output=True, text=True).stdout
@@ -90,6 +139,37 @@ def _process_name(pid):
     except (OSError, subprocess.SubprocessError):
         return None
     return out.strip().split('","')[0].lstrip('"') or None
+
+
+# ss prints the holder as: users:(("python3",pid=1234,fd=3))
+_SS_PROCESS = re.compile(r'\(\("([^"]+)",pid=(\d+)')
+
+
+def _port_owner_linux(port):
+    """Linux: `ss` from iproute2. netstat is not installed everywhere.
+
+    ss only names processes belonging to this user. A port held by another
+    user still answers the question that matters — why the bind failed — so
+    say it is held rather than returning None and leaving the failure
+    unexplained. Silence here is the bug this function exists to prevent.
+    """
+    try:
+        out = subprocess.run(["ss", "-lunp"], timeout=5,
+                             capture_output=True, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        # State Recv-Q Send-Q Local:Port Peer:Port [Process]
+        if len(parts) < 4 or parts[0].upper() != "UNCONN":
+            continue
+        if parts[3].rsplit(":", 1)[-1] != str(port):
+            continue
+        found = _SS_PROCESS.search(line)
+        if found:
+            return f"{found.group(1)} (PID {found.group(2)})"
+        return "a process owned by another user (sudo ss -lunp names it)"
+    return None
 
 
 def parse_packet(data):

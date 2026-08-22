@@ -95,6 +95,13 @@ def test_poll_reply_contains_mac():
     assert reply[201:207] != bytes(6)
 
 
+def _only_hostname(monkeypatch, ips):
+    """Force the hostname path and make it return exactly these addresses."""
+    fake = [(None, None, None, None, (ip, 0)) for ip in ips]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: fake)
+    monkeypatch.setattr(artnet_receiver, "_ipv4_from_ip_command", lambda: [])
+
+
 def test_list_local_ipv4():
     ips = list_local_ipv4()
     assert isinstance(ips, list)
@@ -103,11 +110,92 @@ def test_list_local_ipv4():
         assert len(parts) == 4 and all(p.isdigit() for p in parts)
 
 
+def test_list_local_ipv4_excludes_loopback(monkeypatch):
+    """The selector must never offer an address nothing can be sent to.
+
+    On Debian and Ubuntu the hostname resolves to 127.0.1.1, which is how this
+    returned nothing but loopback on Linux. _bind_addresses() adds 127.0.0.1
+    itself, so loopback has no business in this list on any platform.
+    """
+    _only_hostname(monkeypatch, ["127.0.1.1", "192.168.8.76", "127.0.0.1"])
+    assert list_local_ipv4() == ["192.168.8.76"]
+
+
 def test_list_local_ipv4_sorts_link_local_last(monkeypatch):
-    fake = [(None, None, None, None, (ip, 0))
-            for ip in ("169.254.83.107", "192.168.8.76", "192.168.31.248")]
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: fake)
+    _only_hostname(monkeypatch,
+                   ["169.254.83.107", "192.168.8.76", "192.168.31.248"])
     assert list_local_ipv4() == ["192.168.8.76", "192.168.31.248", "169.254.83.107"]
+
+
+def test_list_local_ipv4_reads_iproute2_off_windows(monkeypatch):
+    """The Linux path parses `ip -4 -o addr show`, not the hostname."""
+    monkeypatch.setattr(artnet_receiver, "IS_WINDOWS", False)
+    monkeypatch.setattr(artnet_receiver.subprocess, "run",
+                        lambda *a, **k: _Completed(IP_ADDR_OUTPUT))
+    assert list_local_ipv4() == ["192.168.100.126", "2.100.100.0"]
+
+
+def test_list_local_ipv4_falls_back_when_ip_is_missing(monkeypatch):
+    """No iproute2 (or it failed): the hostname lookup is better than nothing."""
+    monkeypatch.setattr(artnet_receiver, "IS_WINDOWS", False)
+    monkeypatch.setattr(artnet_receiver.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("no ip")))
+    fake = [(None, None, None, None, ("192.168.8.76", 0))]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: fake)
+    assert list_local_ipv4() == ["192.168.8.76"]
+
+
+IP_ADDR_OUTPUT = (
+    "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever\n"
+    "2: ens2    inet 192.168.100.126/24 brd 192.168.100.255 scope global "
+    "dynamic noprefixroute ens2\\       valid_lft 3502sec\n"
+    "3: AnyDMX    inet 2.100.100.0/8 brd 2.255.255.255 scope global "
+    "noprefixroute AnyDMX\\       valid_lft forever\n"
+)
+
+
+SS_OUTPUT = (
+    "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process\n"
+    "UNCONN 0      0            0.0.0.0:6454       0.0.0.0:*    "
+    'users:(("Freestyler",pid=4312,fd=9))\n'
+    "UNCONN 0      0          127.0.0.53%lo:53    0.0.0.0:*     \n"
+)
+
+
+class _Completed:
+    """Just enough of subprocess.CompletedProcess for the parsers."""
+
+    def __init__(self, stdout="", returncode=0):
+        self.stdout = stdout
+        self.returncode = returncode
+
+
+def test_port_owner_names_the_holder_on_linux(monkeypatch):
+    monkeypatch.setattr(artnet_receiver, "IS_WINDOWS", False)
+    monkeypatch.setattr(artnet_receiver.subprocess, "run",
+                        lambda *a, **k: _Completed(SS_OUTPUT))
+    assert artnet_receiver.port_owner(6454) == "Freestyler (PID 4312)"
+
+
+def test_port_owner_reports_a_port_it_cannot_attribute(monkeypatch):
+    """ss only names this user's processes. Held-but-unnamed still beats None.
+
+    Returning None here would leave the bind failure unexplained, which is
+    the exact silence this function exists to break.
+    """
+    held = ("UNCONN 0      0            0.0.0.0:6454       0.0.0.0:*     \n")
+    monkeypatch.setattr(artnet_receiver, "IS_WINDOWS", False)
+    monkeypatch.setattr(artnet_receiver.subprocess, "run",
+                        lambda *a, **k: _Completed(held))
+    owner = artnet_receiver.port_owner(6454)
+    assert owner is not None and "another user" in owner
+
+
+def test_port_owner_is_none_when_the_port_is_free(monkeypatch):
+    monkeypatch.setattr(artnet_receiver, "IS_WINDOWS", False)
+    monkeypatch.setattr(artnet_receiver.subprocess, "run",
+                        lambda *a, **k: _Completed(SS_OUTPUT))
+    assert artnet_receiver.port_owner(9999) is None
 
 
 def test_advertise_ip_skips_link_local(monkeypatch):
