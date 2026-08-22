@@ -370,14 +370,30 @@ def test_a_declined_prompt_says_so(nmcli):
         vnet.list_adapters()
 
 
+# raising=False because this suite also runs on Windows, where os has no
+# geteuid at all — which is the whole reason is_admin() looks it up rather
+# than calling it outright.
+
 def test_root_is_promised_no_prompt(monkeypatch):
-    monkeypatch.setattr(vnet.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(vnet.os, "geteuid", lambda: 0, raising=False)
     assert vnet.is_admin() is True
     assert vnet.permission_notice() is None
 
 
 def test_an_unprivileged_run_is_told_a_prompt_is_coming(monkeypatch):
-    monkeypatch.setattr(vnet.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(vnet.os, "geteuid", lambda: 1000, raising=False)
+    assert vnet.permission_notice()
+
+
+def test_the_linux_backend_is_safe_to_question_off_linux(monkeypatch):
+    """Every backend is imported on every platform by the contract test.
+
+    is_admin() reaching for a Unix-only call broke both Windows CI jobs while
+    the Linux ones stayed green — precisely the failure the matrix exists to
+    surface, and one no amount of testing on this machine would have found.
+    """
+    monkeypatch.delattr(vnet.os, "geteuid", raising=False)
+    assert vnet.is_admin() is False
     assert vnet.permission_notice()
 
 

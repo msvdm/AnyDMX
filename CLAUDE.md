@@ -391,6 +391,13 @@ follow:
 - CI proves the code is correct and imports cleanly. It has no dongle, no
   console and no lighting network, so it can never prove DMX reached a fixture.
   Do not let a green tick be reported as hardware verification.
+- **A backend must be safe to import and question on a platform it does not
+  manage.** `test_vnet_facade.py` loads all three everywhere, so no module may
+  assume it is running on its own OS at import or attribute-access time. The
+  first CI run caught exactly this: `vnet_linux.is_admin()` called
+  `os.geteuid()`, which does not exist on Windows, and both Windows jobs failed
+  while both Linux ones stayed green. Nothing on this machine would ever have
+  found it.
 
 ## Run / Build
 

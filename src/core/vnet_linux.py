@@ -60,8 +60,16 @@ _STATE_NAMES = {10: "Unmanaged", 20: "Unavailable", 30: "Disconnected",
 # --------------------------------------------------------------- privileges
 
 def is_admin():
-    """True when this process could change an interface without asking."""
-    return os.geteuid() == 0
+    """True when this process could change an interface without asking.
+
+    geteuid() is Unix-only, and this module is imported on every platform —
+    tests/test_vnet_facade.py loads all three backends everywhere to check
+    they still answer to one contract. A backend must therefore be safe to
+    import and question on a platform it does not manage, not only on the one
+    it does.
+    """
+    euid = getattr(os, "geteuid", None)
+    return euid is not None and euid() == 0
 
 
 def is_remote_session():
