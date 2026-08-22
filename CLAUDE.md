@@ -407,10 +407,29 @@ python tools/artnet_sniff.py            # what is actually on the wire
 python tools/artnet_test_sender.py      # feed test pattern to localhost
 ```
 
-PyInstaller build: deferred until after POC hardware verification. It has to
-run on the target OS — PyInstaller cannot cross-compile — so a release workflow
-means one job per platform, and there is no point automating it before it works
-by hand on Windows.
+### Releasing
+
+```
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+That is the whole process. `.github/workflows/release.yml` builds one binary
+per platform (PyInstaller cannot cross-compile, hence the matrix), runs the
+suite on each, and publishes them. `AnyDMX.spec` is the build recipe.
+
+- **The version lives in `src/__init__.py` and nowhere else.** The workflow
+  refuses to build if the tag does not match it, because a binary whose label
+  disagrees with its contents is the one bug a user cannot diagnose
+- The Linux binary is built on `ubuntu-22.04`, not `latest`, deliberately: a
+  PyInstaller binary needs the glibc it was built against **or newer**, so
+  building on the oldest supported runner is what makes it run on the widest
+  range of distros
+- The smoke test runs `--version` on the binary that was just built. That one
+  command proves the bundle unpacks, the interpreter inside it starts, and the
+  version on the label is the version inside — do not weaken it to a
+  "did it exit" check
+- Nothing is code-signed. Say so in the release notes rather than letting a
+  user meet SmartScreen with no warning
 
 ## Verified on real hardware
 

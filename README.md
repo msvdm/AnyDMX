@@ -74,6 +74,29 @@ reasoning, so they do not get "simplified" back into bugs later. If you want to
 know *why* something is the way it is — the frame timing especially — that file
 is the honest answer, not this one.
 
+## Download
+
+Grab the file for your system from the
+[latest release](https://github.com/msvdm/AnyDMX/releases/latest). Nothing to
+install, no Python needed — it is one file.
+
+| System | File | How to run it |
+|---|---|---|
+| Windows 10/11 (64-bit) | `AnyDMX-*-windows-x64.exe` | Double-click it |
+| Linux (64-bit, glibc 2.35+) | `AnyDMX-*-linux-x64` | `chmod +x` it, then run it |
+
+**Windows will warn you the first time.** The file is not signed — a
+code-signing certificate costs more per year than this project costs to run —
+so SmartScreen shows *"Windows protected your PC"*. Click **More info**, then
+**Run anyway**. Some antivirus tools flag single-file Python apps for the same
+reason: they are self-extracting, which looks like what it is. Everything it
+does is in this repository, and the binaries are built by GitHub Actions from
+the tagged commit, not on my machine — the build is
+[`.github/workflows/release.yml`](.github/workflows/release.yml) if you want to
+read it.
+
+Or run it from source, which is what I do:
+
 ## Requirements
 
 - Windows or Linux, Python 3.10+

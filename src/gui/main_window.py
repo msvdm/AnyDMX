@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
+from src import __version__
 from src.core.artnet_receiver import list_local_ipv4
 from src.core.engine import Engine
 from src.core.ports import list_serial_ports
@@ -50,7 +51,7 @@ STATUS_COLORS = {"ok": "text", "warn": "warn", "err": "err", "off": "text_dim"}
 class MainWindow(FramelessWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AnyDMX — Art-Net to DMX bridge")
+        self.setWindowTitle(f"AnyDMX {__version__} — Art-Net to DMX bridge")
         self.engine = Engine()
         self.settings = load_settings()
         # Each drawer state remembers the size it was last left at, so the
